@@ -1,0 +1,3702 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+     <!-- Embedded DTD for validation -->
+     <!DOCTYPE upload [
+     <!ELEMENT compile (#PCDATA)>
+     <!ATTLIST compile
+      condition CDATA #REQUIRED
+     >
+     <!ELEMENT copysrc (#PCDATA)>
+     <!ELEMENT install_instructions (#PCDATA)>
+     <!ELEMENT install_program (#PCDATA)>
+     <!ELEMENT mbr (copysrc)>
+     <!ATTLIST mbr
+      mbrname CDATA #REQUIRED
+      mbrtype CDATA #REQUIRED
+      mbrtext CDATA #REQUIRED
+      srcfile CDATA #REQUIRED
+      srclib CDATA #REQUIRED
+      srclen CDATA #REQUIRED
+      srccssid CDATA #REQUIRED
+     >
+     <!ELEMENT qcmdexc (#PCDATA)>
+     <!ATTLIST qcmdexc
+      condition CDATA #REQUIRED
+      release CDATA #REQUIRED
+      dltsplf CDATA #REQUIRED
+     >
+     <!ELEMENT qrycond (#PCDATA)>
+     <!ATTLIST qrycond
+      msg CDATA #REQUIRED
+      values CDATA #REQUIRED
+      var CDATA #REQUIRED
+     >
+     <!ELEMENT sendmsg (#PCDATA)>
+     <!ATTLIST sendmsg
+      sendmsgid CDATA #REQUIRED
+      sendmsgtype CDATA #REQUIRED
+     >
+     <!ELEMENT rtvobjd (#PCDATA)>
+     <!ATTLIST rtvobjd
+      condition CDATA #REQUIRED
+      obj CDATA #REQUIRED
+      lib CDATA #REQUIRED
+      objtype CDATA #REQUIRED
+      rtnlib CDATA #IMPLIED
+     >
+     <!ELEMENT upload (install_instructions | install_program | qrycond |
+                       qcmdexc | sendmsg | mbr | compile | rtvobjd | chgvar)+>
+     <!ATTLIST upload
+      appname CDATA #REQUIRED
+      appauthor CDATA #REQUIRED
+      appblddate CDATA #REQUIRED
+     >
+     ]>
+<upload  appname="RTVMBRL"  appauthor="Thomas Raddatz"  appblddate=" 6/06/2026">
+<install_instructions><![CDATA[
+     *----------------------------------------------------------------      ------
+     *  1. Upload entire XML to your AS/400 to a source file 112 long, into any mbr
+     *     name not in this XML (suggest member name like ABCX or XYZX). The source
+     *     file must be in the library where source and objects are to be installed.
+     *
+     *  2. If you have XMLPREVIEW installed, skip to step 3.
+     *
+     *     Copy the text between the start tag <install_program> and the end
+     *     tag </install_program> into any member name (your choice)
+     *     in file QRPGLESRC member type RPGLE.   CRTBNDRPG to compile.
+     *     NOTE: You need extract the install program only once, this same program
+     *           will install any upload on this page.
+     *
+     *  3. Call the install program (or execute XmlPrevew) passing these 3 parms.
+     *       'your-member-name you uploaded this text into'
+     *       'your-source-file-name the member is in'
+     *       'your-library-name the source file is in'
+     *
+     *  The various source members will be extracted and the objects required
+     *   for the application will be created in your-library-name.
+     *----------------------------------------------------------------      ------
+]]>  </install_instructions>
+<install_program><![CDATA[
+      * /// START OF INSTALL PGM HERE   ************************** ///
+      *---------------------------------------------------------------------------------------
+      * CRTBNDRPG PGM(QTEMP/XMLINST) SRCFILE(ISPHERE/QBUILD) SRCMBR(*PGM)
+      *---------------------------------------------------------------------------------------
+      * Parse / Install from xml text into source members and objects.
+      * Copyright (C) 2001    Craig Rutledge    <craig_rutledge@mohawkind.com>
+      * Martin Rowe    <Martin@dbg400.net>          scripting cmd prompts
+      * David George   <webmaster@400times.co.uk>   intellectual input
+      * Thomas Raddatz <thomas.raddatz@tools400.de> execute SQL statements
+      * Thomas Raddatz <thomas.raddatz@tools400.de> conditions
+      * Thomas Raddatz <thomas.raddatz@tools400.de> release
+      * Thomas Raddatz <thomas.raddatz@tools400.de> retrieve object description
+      *
+      * Use xml tags in text to trigger:
+      * 1. Parse text into source members (create srcfile & member if required).
+      * 2. Compile source into objects.
+      * 3. Send installation progress user messages.
+      * 4. Execute qcmdexc as required.
+      * 5. Execute SQL statements as required.
+      *
+      * This program is free software, you can redistribute it and/or modify it
+      * under the terms of the GNU General Public License as published by
+      * the Free Software Foundation.  See GNU General Public License for details
+      *---------------------------------------------------------------------------------------
+      * >>PRE-COMPILER<<
+      *   >>CRTCMD<< CRTBNDRPG    PGM(&LI/&OB) SRCFILE(&SL/&SF) SRCMBR(*PGM) +
+      *                           DBGVIEW(*LIST) OPTION(*EVENTF);
+      *   >>EXECUTE<<
+      * >>END-PRE-COMPILER<<
+      *---------------------------------------------------------------------------------------
+     H DFTACTGRP(*NO) ACTGRP(*CALLER) BNDDIR('QC2LE')
+      *---------------------------------------------------------------------------------------
+     Fxmlinput  if   f  112        disk    usropn                               uploaded text
+     Fqxxxsrc   o    f  112        disk    usropn                               parsed out
+      *--------------------------------------------------------------------
+      * create parm prototypes
+      *--------------------------------------------------------------------
+      *  Tokenize String
+     D strtok          PR              *          extproc('strtok')
+     D  i_string                       *   value  options(*string)
+     D  i_token                        *   value  options(*string)
+      * retrieve member description
+     D qusrmbrd        PR                  ExtPgm('QUSRMBRD')                   MEMBER DESCRIPTION
+     D  o_rcvVar                  32767a          options(*varsize)             RECEIVER
+     D  i_lenRcvVar                  10i 0 const                                LENGTH OF RECVR
+     D  i_format                      8    const                                UPLOAD TYPE
+     D  i_qFile                      20    const                                FILE   LIB
+     D  i_mbr                        10    const                                MEMBER NAME
+     D  i_ovverride                   1    const                                PROCESS OVERIDE
+     D  io_errCode                32767a          options(*varsize)             ERROR CODE
+      * retrieve object description
+     D QUSROBJD...
+     D                 PR                         extpgm('QUSROBJD')
+     D  o_rcvVar                  65535A          options(*varsize)
+     D  i_lenRcvVar                  10I 0 const
+     D  i_format                      8A   const
+     D  i_qObj                       20A   const
+     D  i_type                       10A   const
+     D  io_errCode                65535A          options(*nopass: *varsize)    | OptGrp 1
+      * send program message
+     D qmhsndpm        PR                  ExtPgm('QMHSNDPM')                   SEND MESSAGES
+     D  i_msgID                       7a   const                                ID
+     D  i_qMsgF                      20a   const                                FILE
+     D  i_msgText                 32767a   const  options(*varsize)             TEXT
+     D  i_lenMsgText                 10i 0 const                                LENGTH
+     D  i_msgType                    10a   const                                TYPE
+     D  i_callStackE                 10a   const                                STACK ENTRY
+     D  i_callStackC                 10i 0 const                                STACK COUNTER
+     D  i_msgKey                      4a   const                                KEY
+     D  io_errCode                32767a          options(*varsize)             ERROR CODE
+      * execute cl command
+     D  qcmdexc        PR                  ExtPgm('QCMDEXC')
+     D  i_cmd                        50a   Const
+     D  i_lenCmd                     15p 5 Const
+      *  Allocate Environment Handle
+     D SQLAllocEnv...
+     D                 PR                         extproc('SQLAllocEnv')
+     D                                     like(SQLRETURN_t )
+     D  o_phenv                        *   value
+      *  Allocate Connection Handle
+     D SQLAllocConnect...
+     D                 PR                         extproc('SQLAllocConnect')
+     D                                     like(SQLRETURN_t )
+     D  i_henv                             value  like(SQLHENV_t   )
+     D  o_phdbc                        *   value
+      *  Connect to a Data Source
+     D SQLConnect...
+     D                 PR                         extproc('SQLConnect')
+     D                                     like(SQLRETURN_t )
+     D  i_hdbc                             value  like(SQLHDBC_t   )
+     D  i_szDSN                        *   value  options(*string)
+     D  i_cbDSN                            value  like(SQLSMALLINT_t)
+     D  i_szUID                        *   value  options(*string)
+     D  i_cbUID                            value  like(SQLSMALLINT_t)
+     D  i_szAuthStr                    *   value  options(*string)
+     D  i_cbAuthStr                        value  like(SQLSMALLINT_t)
+      *  Set Connection Option
+     D SQLSetConnectOption...
+     D                 PR                         extproc('SQLSetConnectOption')
+     D                                     like(SQLRETURN_t )
+     D  i_hdbc                             value  like(SQLHDBC_t   )
+     D  i_fOption                          value  like(SQLSMALLINT_t)
+     D  i_vParam                           value  like(SQLPOINTER_t )
+      *  Allocate a Statement Handle
+     D SQLAllocStmt...
+     D                 PR                         extproc('SQLAllocStmt')
+     D                                     like(SQLRETURN_t )
+     D  i_hdbc                             value  like(SQLHDBC_t   )
+     D  o_phstmt                       *   value
+      *  Execute a Statement Directly
+     D SQLExecDirect...
+     D                 PR                         extproc('SQLExecDirect')
+     D                                     like(SQLRETURN_t )
+     D  i_hstmt                            value  like(SQLHSTMT_t  )
+     D  i_szSqlStr                     *   value  options(*string)
+     D  i_cbSqlStr                         value  like(SQLINTEGER_t)
+      *  Free (or Reset) a Statement Handle
+     D SQLFreeStmt...
+     D                 PR                         extproc('SQLFreeStmt')
+     D                                     like(SQLRETURN_t )
+     D  i_hstmt                            value  like(SQLHSTMT_t  )
+     D  i_fOption                          value  like(SQLSMALLINT_t)
+      *  Disconnect from a Data Source
+     D SQLDisconnect...
+     D                 PR                         extproc('SQLDisconnect')
+     D                                     like(SQLRETURN_t )
+     D  i_hdbc                             value  like(SQLHDBC_t   )
+      *  Free Connection Handle
+     D SQLFreeConnect...
+     D                 PR                         extproc('SQLFreeConnect')
+     D                                     like(SQLRETURN_t )
+     D  i_hdbc                             value  like(SQLHDBC_t   )
+      *  Free Environment Handle
+     D SQLFreeEnv...
+     D                 PR                         extproc('SQLFreeEnv')
+     D                                     like(SQLRETURN_t )
+     D  i_henv                             value  like(SQLHENV_t   )
+      *--------------------------------------------------------------------
+     D long_t          S             10I 0                    based(pDummy)
+     D short_t         S              5I 0                    based(pDummy)
+      *
+     D SQLINTEGER_t    S                   like(long_t      ) based(pDummy)
+     D SQLSMALLINT_t   S                   like(short_t     ) based(pDummy)
+      *
+     D PTR_t           S               *                      based(pDummy)
+     D SQLPOINTER_t    S                   like(PTR_t       ) based(pDummy)
+     D HENV_t          S                   like(long_t      ) based(pDummy)
+     D HDBC_t          S                   like(long_t      ) based(pDummy)
+     D HSTMT_t         S                   like(long_t      ) based(pDummy)
+     D RETCODE_t       S                   like(SQLINTEGER_t) based(pDummy)
+      *
+     D SQLHENV_t       S                   like(HENV_t      ) based(pDummy)
+     D SQLHDBC_t       S                   like(HDBC_t      ) based(pDummy)
+     D SQLHSTMT_t      S                   like(HSTMT_t     ) based(pDummy)
+     D SQLRETURN_t     S                   like(RETCODE_t   ) based(pDummy)
+      *
+     D retCode         S                   like(SQLRETURN_t) inz
+     D hdbc            S                   like(SQLHDBC_t  ) inz
+     D hstmt           S                   like(SQLHSTMT_t ) inz
+     D henv            S                   like(SQLHENV_t  ) inz
+     D sqlInit         S              1A                     inz(*off)
+     D cOptVal         S             10I 0                   inz
+      *
+     D SQL_NTS         C                   const( -3)
+     D SQL_COMMIT_NONE...
+     D                 C                   const(  1)
+     D SQL_ATTR_COMMIT...
+     D                 C                   const(  0)
+     D SQL_DROP        C                   const(  1)
+      *--------------------------------------------------------------------
+      * Read element
+      *--------------------------------------------------------------------
+     D readElement     PR                        like(bldexc)
+     D  i_element                     9A   value varying
+      *--------------------------------------------------------------------
+      * Define function prototype to double quotes in a string
+      *--------------------------------------------------------------------
+     D dblQuotes       PR          2048A         varying
+     D  i_string                   2048A   value varying
+      *--------------------------------------------------------------------
+      * Define function prototype to get attribute data from a string
+      *--------------------------------------------------------------------
+     D getAttrData...
+     D                 PR          2000A          varying                       like(string_t)
+     D  i_attr                       10a   value
+     D  i_string                   2000A   value  varying                       like(string_t)
+     D  i_default                  2000A   value  varying                       like(string_t)
+      *--------------------------------------------------------------------
+      * Define function prototype to check for a condition
+      *--------------------------------------------------------------------
+     D isCondition...
+     D                 PR              n
+     D  i_condList                 2000A   value
+      *---------------------------------------------------------------------------------------
+     D loadConditions...
+     D                 PR                  dim(32) like(condition)
+     D  i_conditions                128A   value
+      *--------------------------------------------------------------------
+     D getCurrentRelease...
+     D                 PR            10A
+      *--------------------------------------------------------------------
+     D isRelease...
+     D                 PR              n
+     D  i_os_release                  6A   value
+     D  i_release                    10A   value
+      *--------------------------------------------------------------------
+     D setTargetRelease...
+     D                 PR          2000A          varying
+     D  i_keyword                    10A   value  varying
+     D  i_string                   2000A   value  varying
+     D  i_value                      10A   value  varying
+      *--------------------------------------------------------------------
+     D setVariable...
+     D                 PR
+     D  i_fldName                    10A   value  varying
+     D  i_value                      64A   value  varying
+      *---------------------------------------------------------------------------------------------
+     D getVarName...
+     D                 PR            11a          varying
+     D  i_bldexc                           value  like(bldexc)
+     D  i_pos                        10i 0 value
+      *---------------------------------------------------------------------------------------------
+     D getVarValue...
+     D                 PR            64a          varying
+     D  i_name                       11a   value  varying
+      *---------------------------------------------------------------------------------------------
+     D uCase...
+     D                 PR          2000A          varying
+     D  i_string                   2000A   value  varying
+      *--------------------------------------------------------------------
+     D vrcvar          s            145
+     D qm_msgid        s              7
+     D qm_msgtxt       s            500
+     D qm_msgq         s             10
+     D qm_msgtyp       s             10
+     D mbrname         s             10
+     D mbrtype         s             10
+     D mbrtext         s             50
+     D srcfile         s             10
+     D srclen          s              5
+     D srclenN         s              5  0   inz(0)
+     D srccssid        s              5
+     D bldexc          s           2000
+     D write_flag      s              1n   inz(*off)
+     D srcSeqno        s              6s 2 inz(0)
+     D aa              s              5u 0 inz(0)
+     D ll              s              5u 0 inz(0)
+     D qs              c                   ''''
+     D qd              c                   '"'
+     D errFLag         s              1    inz(*off)
+     D cnd_msg         s             42
+     D cnd_values      s            110
+     D cnd_var         s             10
+     D cnd_rtnVal      s             10
+     D cnd_array       s                   dim(32) inz like(condition)
+     D cnd_ptr         s             10i 0 inz
+     D condition       s             10a
+     D condList        s           2000a
+     D release         s             10a
+     D dltsplf         s             10a
+     D objd_obj        s             10a
+     D objd_lib        s             10a
+     D objd_objtype    s             10a
+     D objd_rtnlib     s             10a
+     D objd0100        ds
+     D  od_bytRet              1      4i 0
+     D  od_bytAvl              5      8i 0
+     D  od_name                9     18a
+     D  od_lib                19     28a
+     D  od_type               29     38a
+     D  od_rtnLib             39     48a
+     D fld_array       ds
+     D  fld_x                        10i 0 inz
+     D  fld_name                     11a   inz dim(64) varying
+     D  fld_value                    64a   inz dim(64) varying
+     D var_name        s             11a   inz varying
+     D var_value       s             64a   inz varying
+      * Error return code parm for APIs.
+     D errCode         DS
+     D  errCode_bytPrv...
+     D                               10i 0 inz(%size(errCode))
+     D  errCode_bytAvl...
+     D                               10i 0 inz(0)
+     D  errCode_excID...
+     D                                7a   inz
+     D  errCode_reserved...
+     D                                1a   inz
+     D  errCode_escData...
+     D                              256a   inz
+      * Optional parameters
+     D OvrSrcFile      s                   like(i_OvrSrcFile) inz
+     D isPreDefCond    s               N   inz(*off)
+     D TgtRls          s                   like(i_TgtRls    ) inz
+      *
+      * Program status data structure.
+     D sds            sds
+     D  sds_pgmName                  10A
+     D  sds_status                    5S 0
+     D  sds_prvStat                   5S 0
+     D  sds_lastSeq                   8A
+     D  sds_lastSubR                  8A
+     D  sds_numParm                   3S 0
+     D  sds_msgID                     7A
+     D  sds_MiInstr                   4A
+     D  sds_wrkArea                  30A
+     D  sds_lib                      10A
+     D  sds_msgText                  80A
+      *--------------------------------------------------------------------
+     Ixmlinput  ns
+     I                                 13   21  xmltag1
+     I                                 18   27  xmltag2
+     I                                 13  112  xmlcode
+      *--------------------------------------------------------------------
+     C     *entry        plist
+     C                   parm                    ParseSrcMbr      10            source member
+     C                   parm                    ParseSrcFile     10            source file
+     C                   parm                    ParseSrcLib      10            source lib
+      *  optional parameters:
+     C                   parm                    i_OvrSrcFile     10            override to src
+     C                   parm                    i_Conditions    128            pre-def conditions
+     C                   parm                    i_TgtRls         10            target release
+      *
+      *  get optional parameter: Overrride to Source File
+     C                   if        %parms() >= 4
+     C                   eval      OvrSrcFile = i_OvrSrcFile
+     C                   else
+     C                   eval      OvrSrcFile = ''
+     C                   endif
+      *
+      *  get optional parameter: Conditions
+     C                   if        %parms() >= 5
+     C                   if        %subst(i_Conditions:1:32) <> ''
+     C                   eval      cnd_array = loadConditions(i_Conditions)
+     C                   eval      isPreDefCond = *on
+     C                   else
+     C                   eval      isPreDefCond = *off
+     C                   endif
+     C                   endif
+      *
+      *  get optional parameter: Target Release
+     C                   if        %parms() >= 6
+     C                   eval      TgtRls = i_TgtRls
+     C                   else
+     C                   eval      TgtRls = getCurrentRelease()
+     C                   endif
+      *
+     C                   exsr      srValidate                                   make sure exist
+      *
+      * Set user selected library *first for remainder of program
+     C                   eval      bldexc = 'RMVLIBLE LIB('+
+     C                             %trimr(ParseSrcLib) + ')'
+     C                   callp(e)  qcmdexc(bldexc:%len(%trimr(bldexc)))
+      *
+     C                   eval      bldexc = 'ADDLIBLE LIB('+
+     C                             %trimr(ParseSrcLib) + ') POSITION(*FIRST)'
+     C                   callp(e)  qcmdexc(bldexc:%len(%trimr(bldexc)))
+      *
+      *       CPF2103 - Library &1 already exists in library list.
+     C                   if        %error and sds_msgID <> 'CPF2103'
+     C                   eval      qm_msgtxt = '0000 ' + sds_msgText
+     C                   exsr      srKill
+     C                   endif
+      *
+      * Set variable &TOLIB
+     C                   callp     setVariable('tolib': ParseSrcLib)
+      *
+      * Set variable &TGTRLS
+     C                   callp     setVariable('tgtrls': TgtRls)
+      *
+      * Set variable &XMLFILE
+     C                   callp     setVariable('xmlfile': ParseSrcFile)
+      *
+      * Set variable &XMLLIB
+     C                   callp     setVariable('xmllib': ParseSrcFile)
+      *
+      * Set variable &XMLMBR
+     C                   callp     setVariable('xmlmbr': ParseSrcFile)
+      *
+      * Override Input file to uploaded text file
+     C                   eval      bldexc = 'OVRDBF FILE(XMLINPUT) TOFILE(' +
+     C                             %trimr(ParseSrcLib)+'/'+
+     C                             %trimr(ParseSrcFile) + ') MBR(' +
+     C                             %trimr(ParseSrcMbr) + ')'
+     C                   callp     qcmdexc(bldexc:%len(%trimr(bldexc)))
+     C                   open      xmlinput
+     C                   read      xmlinput
+     C                   dow       not %eof
+      * write records to outfile if flag is on
+     C                   select
+     C                   when      write_flag = *on
+     C                   if        xmltag2<>'</copysrc>'
+     C                   eval      srcSeqno=srcSeqno+1
+     C                   except    write_one
+     C                   else
+     C                   eval      write_flag=*off
+     C                   close     qxxxsrc
+     C                   endif
+      *
+      * Extract values based on xml tags.
+     C                   when      xmltag1 = 'mbrname ='
+     C                   eval      mbrname = %subst(xmlcode:13:10)
+     C                   when      xmltag1 = 'mbrtype ='
+     C                   eval      mbrtype =%subst(xmlcode:13:10)
+     C                   when      xmltag1 = 'mbrtext ='
+     C                   eval      mbrtext =dblQuotes(%subst(xmlcode:13:50))
+     C                   when      xmltag1 = 'srcfile ='
+     C                   if        OvrSrcFile <> ''
+     C                   eval      srcfile =OvrSrcFile
+     C                   else
+     C                   eval      srcfile =%subst(xmlcode:13:10)
+     C                   endif
+     C                   when      xmltag1 = 'srclen  ='
+     C                   eval      srclen  =%subst(xmlcode:13:5)
+     C                   when      xmltag1 = 'srccssid='
+     C                   eval      srccssid=%subst(xmlcode:13:5)
+      *--------------------------------------------------------------------
+      * Start of data to copy.  Create source files/mbrs as required.
+      *--------------------------------------------------------------------
+     C                   when      xmltag1='<copysrc>'
+     C                   move      srclen        srclenN
+      * crtsrcpf
+     C                   eval      bldexc = 'CRTSRCPF FILE(' +
+     C                             %trimr(ParseSrcLib)+'/'+
+     C                             %trimr(srcfile) + ') RCDLEN(' +
+     C                             srclen + ') CCSID(' +
+     C                             srccssid + ')'
+     C                   callp(e)  qcmdexc(bldexc:%len(%trimr(bldexc)))
+      * addpfm
+     C                   eval      bldexc = 'ADDPFM   FILE(' +
+     C                             %trimr(ParseSrcLib)+'/'+
+     C                             %trimr(srcfile) + ') MBR(' +
+     C                             %trimr(mbrname) + ') SRCTYPE(' +
+     C                             %trimr(mbrtype) + ') TEXT(' +
+     C                             qs+%trimr(mbrtext)+qs + ')'
+     C                   callp(e)  qcmdexc(bldexc:%len(%trimr(bldexc)))
+     C                   if        %error
+      * chgpfm
+     C                   eval      bldexc = 'CHGPFM   FILE(' +
+     C                             %trimr(ParseSrcLib)+'/'+
+     C                             %trimr(srcfile) + ') MBR(' +
+     C                             %trimr(mbrname) + ') TEXT(' +
+     C                             qs+%trimr(mbrtext)+qs + ')'
+     C                   callp     qcmdexc(bldexc:%len(%trimr(bldexc)))
+      * clr mbr
+     C                   eval      bldexc = 'CLRPFM   FILE(' +
+     C                             %trimr(ParseSrcLib)+'/'+
+     C                             %trimr(srcfile) + ') MBR(' +
+     C                             %trimr(mbrname) + ')'
+     C                   callp     qcmdexc(bldexc:%len(%trimr(bldexc)))
+     C                   endif
+      * ovr to outfile mbr
+     C                   eval      bldexc = 'OVRDBF QXXXSRC ' +
+     C                             %trimr(ParseSrcLib) + '/' +
+     C                             %trimr(srcfile) + ' ' +
+     C                             mbrname
+     C                   callp     qcmdexc(bldexc:%len(%trimr(bldexc)))
+     C                   clear                   srcSeqno
+     C                   open      qxxxsrc
+     C                   eval      write_flag = *on
+      *--------------------------------------------------------------------
+      * Compile statement.  Read next record and execute it.
+      *--------------------------------------------------------------------
+     C                   when      xmltag1 = '<compile '
+     C                   eval      condList= getAttrData('condition':xmlcode:'')
+     C                   read      xmlinput
+     C                   eval      bldexc = readElement('compile')
+     C                   if        isCondition(condList)
+     C                   exsr      RplVars
+     C                   exsr      SetTgtRls
+     C                   callp     qcmdexc(bldexc:%len(%trimr(bldexc)))
+     C                   endif
+      *--------------------------------------------------------------------
+      * qcmdexc statement. Build statement from each record between start
+      * and stop tags.  When stop tag is found, execute statement.
+      *--------------------------------------------------------------------
+     C                   when      xmltag1 = '<qcmdexc '
+     C                   eval      condList = getAttrData('condition'
+     C                                                    :xmlcode:'')
+     C                   eval      release  = getAttrData('release'
+     C                                                    :xmlcode:'*CURRENT')
+     C                   eval      dltsplf  = getAttrData('dltsplf'
+     C                                                    :xmlcode:'*NONE')
+     C                   read      xmlinput
+     C                   eval      bldexc = readElement('qcmdexc')
+     C                   if        isCondition(condList) and
+     C                             isRelease(tgtRls: release)
+     C                   exsr      RplVars
+     C                   exsr      SetTgtRls
+     C                   if        %subst(bldexc: 1: 3) = 'DLT'
+     C                   callp (e) qcmdexc(bldexc:%len(%trimr(bldexc)))
+     C                   else
+     C                   callp (e) qcmdexc(bldexc:%len(%trimr(bldexc)))
+     C                   if        %error()
+     C                   eval      qm_msgtxt = '0000 Failed to execute: '+bldexc
+     C                   exsr      srKill
+     C                   endif
+     C                   if        dltsplf <> '' and dltsplf <> '*NONE'
+     C                   eval      bldexc = 'DLTSPLF FILE(' + dltsplf +
+     C                                      ') JOB(*) SPLNBR(*LAST)'
+     C                   callp (e) qcmdexc(bldexc:%len(%trimr(bldexc)))
+     C                   endif
+     C                   endif
+     C                   endif
+      *--------------------------------------------------------------------
+      * SQL statement. Build statement from each record between start
+      * and stop tags.  When stop tag is found, execute SQL statement.
+      *--------------------------------------------------------------------
+     C                   when      xmltag1 = '<execsql '
+     C                   eval      condList = getAttrData('condition'
+     C                                                    :xmlcode:'')
+     C                   read      xmlinput
+     C                   eval      bldexc = readElement('execsql')
+     C                   if        isCondition(condList)
+     C                   exsr      RplVars
+     C                   exsr      srSQLExecute
+     C                   endif
+      *--------------------------------------------------------------------
+      * Send messages to user as program executes
+      * Extract message ID, Message Type, from <sendmsg>
+      * read a record and get the single line of message text.
+      *--------------------------------------------------------------------
+     C                   when      xmltag1 = '<sendmsg '
+     C                   eval      qm_msgid = %subst(xmlcode:22:7)
+     C                   eval      qm_msgtyp = %subst(xmlcode:46:10)
+     C                   read      xmlinput
+     C                   eval      qm_msgq   = '*EXT   '
+     C                   eval      qm_msgtxt = xmlcode
+     C                   exsr      srSndMessage
+      *--------------------------------------------------------------------
+      * rtvobjd statement. retrieve object description of the specified
+      * object. Store attributes in specified fields.
+      *--------------------------------------------------------------------
+     C                   when      xmltag1 = '<rtvobjd '
+     C                   eval      condList = getAttrData('condition'
+     C                                                    :xmlcode:'')
+     C                   eval      bldexc = readElement('rtvobjd')
+     C                   eval      objd_obj    =getAttrData('obj'    :bldexc:'')
+     C                   eval      objd_lib    =getAttrData('lib'    :bldexc:'')
+     C                   eval      objd_objtype=getAttrData('objtype':bldexc:'')
+     C                   eval      objd_rtnlib =getAttrData('rtnlib' :bldexc:'')
+     C                   if        isCondition(condList)
+     C                   exsr      srRtvObjD
+     C                   endif
+      *--------------------------------------------------------------------
+      * chgvar statement.
+      *--------------------------------------------------------------------
+     C                   when      xmltag1 = '<chgvar  '
+     C                   eval      condList = getAttrData('condition'
+     C                                                    :xmlcode:'')
+     C                   eval      bldexc = readElement('chgvar')
+     C                   eval      var_name  = getAttrData('var'    :bldexc:'')
+     C                   eval      var_value = getAttrData('value'  :bldexc:'')
+     C                   if        isCondition(condList)
+     C                   exsr      srChgVar
+     C                   endif
+      *--------------------------------------------------------------------
+      * Query condition
+      *--------------------------------------------------------------------
+     C                   when      xmltag1 = '<qrycond '
+     C                   eval      bldexc = readElement('qrycond')
+     C                   eval      cnd_msg = getAttrData('msg'   : bldexc: '')
+     C                   eval      cnd_values = getAttrData('values': bldexc:'')
+     C                   eval      cnd_var = getAttrData('var': bldexc: '*NONE')
+     C                   exsr      srQueryCond
+     C                   endsl
+      *
+     C                   read      xmlinput
+     C                   enddo
+      *
+     C                   exsr      srSQLEnd
+     C                   eval      *inlr=*on
+     C                   return
+      *--------------------------------------------------------------------
+      * Replace variable names with their associated values.
+      *--------------------------------------------------------------------
+     C     RplVars       begsr
+     C                   eval      aa=%scan('&':bldexc)
+     C                   dow       aa>0
+     C                   eval      var_name=getVarName(bldexc:aa)
+     C                   eval      var_value=getVarValue(var_name)
+     C                   eval      bldexc=%replace(var_value:bldexc:aa
+     C                                             :%len(var_name))
+     C                   eval      aa=%scan('&':bldexc)
+     C                   enddo
+     C                   endsr
+      *--------------------------------------------------------------------
+      * Sets the target release according to the optional parameter
+      * i_TgtRls.
+      *--------------------------------------------------------------------
+     C     SetTgtRls     begsr
+     C                   if        TgtRls = getCurrentRelease()
+     C                   leavesr
+     C                   endif
+     C                   eval      bldexc =
+     C                                setTargetRelease('TGTRLS': bldexc: TgtRls)
+     C                   endsr
+      *--------------------------------------------------------------------
+      * Check of file, lib, member exist.
+      *--------------------------------------------------------------------
+     C     srValidate    begsr
+     C                   callp     QUSRMBRD(
+     C                             vrcvar:
+     C                             145:
+     C                             'MBRD0100':
+     C                             ParseSrcFile + ParseSrcLib:
+     C                             ParseSrcMbr:
+     C                             '0':
+     C                             errCode)
+      *   --------------------------------------------------------------------------------
+      *   If error occurred on call, send appropriate message back to user.
+      *   ---------------------------------------------------------------------------------
+     C                   if        errCode_bytAvl <> 0                          error occurred
+     C                   select
+      * lib not found
+     C                   when      errCode_excID = 'CPF9810'
+     C                   eval      qm_msgtxt = '0000 Library ' +
+     C                             %trimr(ParseSrcLib) + ' was not found.'
+      * src file not found
+     C                   when      errCode_excID = 'CPF9812'
+     C                   eval      qm_msgtxt = '0000 Source file ' +
+     C                             %trimr(ParseSrcFile)+' was not found in ' +
+     C                             %trimr(ParseSrcLib) + '.'
+      * member not found
+     C                   when      errCode_excID = 'CPF9815'
+     C                   eval      qm_msgtxt = '0000 Member ' +
+     C                             %trimr(ParseSrcMbr)+' was not found in ' +
+     C                             %trimr(ParseSrcLib)+'/'+ %trimr(ParseSrcFile)
+      * unexpected
+     C                   other
+     C                   eval      qm_msgtxt = '0000 Unexpected message ' +
+     C                             errCode_excID + ' received. '
+     C                   endsl
+      * send message
+     C                   exsr      srKill
+     C                   eval      *inlr=*on
+     C                   return
+     C                   endif
+     C                   endsr
+      *--------------------------------------------------------------------
+      * kill application
+      *--------------------------------------------------------------------
+     C     srKill        begsr
+     C                   eval      qm_msgid  = 'CPD0006'
+     C                   eval      qm_msgtyp = '*DIAG'
+     C                   eval      qm_msgq   = '*CTLBDY'
+     C                   exsr      srSndMessage
+     C                   eval      qm_msgtxt = *blanks
+     C                   eval      qm_msgid  = 'CPF0002'
+     C                   eval      qm_msgtyp = '*ESCAPE'
+     C                   exsr      srSndMessage
+     C                   endsr
+      *--------------------------------------------------------------------
+      * call send program message api
+      *--------------------------------------------------------------------
+     C     srSndMessage  begsr
+     C                   callp     QMHSNDPM(
+     C                             qm_msgid:
+     C                             'QCPFMSG   *LIBL     ':
+     C                             qm_msgtxt:
+     C                             %size(qm_msgtxt):
+     C                             qm_msgtyp:
+     C                             qm_msgq:
+     C                             1:
+     C                             '    ':
+     C                             errCode)
+     C                   endsr
+      *--------------------------------------------------------------------
+      * retrieve object description and store attributes
+      *--------------------------------------------------------------------
+     C     srRtvObjD     begsr
+     C                   callp     QUSROBJD(objd0100
+     C                                      : %size(objd0100)
+     C                                      : 'OBJD0100'
+     C                                      : objd_obj + objd_lib
+     C                                      : objd_objtype
+     C                                      : errCode)
+     C                   if        errCode_bytAvl <> 0                          error occurred
+     C                   eval      qm_msgtxt = '0000 Failed to retrieve +
+     C                             object description of object ' +
+     C                             %trim(objd_lib) + '/' + %trim(objd_obj) +
+     C                             ' type ' + %trim(objd_objtype) + '.'
+      * send message
+     C                   exsr      srKill
+     C                   else
+     C                   callp     setVariable(objd_rtnlib: od_rtnlib)
+     C                   endif
+     C                   endsr
+      *--------------------------------------------------------------------
+      * change variable
+      *--------------------------------------------------------------------
+     C     srChgVar      begsr
+     C                   callp     setVariable(var_name: var_value)
+     C                   endsr
+      *--------------------------------------------------------------------
+      * execute SQL statement.
+      *--------------------------------------------------------------------
+     C     srSQLExecute  begsr
+     C                   exsr      srSQLInit
+     C                   Eval      retCode = SQLExecDirect(hstmt    :
+     C                                                     bldexc   :
+     C                                                     SQL_NTS  )
+     C                   endsr
+      *--------------------------------------------------------------------
+      * query condition.
+      *--------------------------------------------------------------------
+     C     srQueryCond   begsr
+     C                   if        isPreDefCond = *off
+     C                   eval      cnd_values = uCase(cnd_values)
+     C                   dou       (%scan(cnd_rtnVal: cnd_values) > 0) and
+     C                             (cnd_rtnval <> ''                 )
+     C                   eval      cnd_rtnval = ' '
+     C     cnd_msg       dsply                   cnd_rtnval
+     C                   eval      cnd_rtnVal = uCase(cnd_rtnVal)
+     C                   enddo
+     C                   eval      cnd_ptr = cnd_ptr + 1
+     C                   eval      cnd_array(cnd_ptr) = cnd_rtnVal
+     C                   endif
+     C                   if        (cnd_var <> '*NONE')
+     C                   callp     setVariable(cnd_var: cnd_rtnval)
+     C                   endif
+     C                   endsr
+      *--------------------------------------------------------------------
+      * initialize SQL.
+      *--------------------------------------------------------------------
+     C     srSQLInit     begsr
+      *
+     C                   if        sqlInit = *off
+     C                   Eval      retCode = SQLAllocEnv(%addr(henv))
+     C                   Eval      retCode = SQLAllocConnect(henv: %addr(hdbc))
+     C                   Eval      retCode = SQLConnect(hdbc      :
+     C                                                  '*LOCAL'  :
+     C                                                  SQL_NTS   :
+     C                                                  *null     :
+     C                                                  SQL_NTS   :
+     C                                                  *null     :
+     C                                                  SQL_NTS   )
+     C                   Eval      cOptVal = SQL_COMMIT_NONE
+     C                   Eval      retCode = SQLSetConnectOption(hdbc          :
+     C                                                          SQL_ATTR_COMMIT:
+     C                                                          %addr(cOptVal) )
+     C                   Eval      retCode = SQLAllocStmt(hdbc       :
+     C                                                  %addr(hstmt) )
+     C                   eval      sqlInit = *on
+     C                   endif
+     C                   endsr
+      *--------------------------------------------------------------------
+      * end SQL.
+      *--------------------------------------------------------------------
+     C     srSQLEnd      begsr
+     C                   if        sqlInit = *on
+     C                   Eval      retCode = SQLFreeStmt(hstmt    :
+     C                                                   SQL_DROP )
+     C                   Eval      retCode = SQLDisconnect(hdbc)
+     C                   Eval      retCode = SQLFreeConnect(hdbc)
+     C                   Eval      retCode = SQLFreeEnv(henv)
+     C                   eval      sqlInit = *off
+     C                   endif
+     C                   endsr
+      *--------------------------------------------------------------------
+      * error handler
+      *--------------------------------------------------------------------
+     C     *pssr         begsr
+     C                   if        errFLag = *off
+     C                   eval      errFlag = *on
+     C                   exsr      srSQLEnd
+     C                   endif
+     C                   endsr     '*CANCL'
+     Oqxxxsrc   e            write_one
+     O                       srcSeqno             6
+     O                                           12 '000000'
+     O                       xmlcode            112
+      *--------------------------------------------------------------------
+      * Read element
+      *--------------------------------------------------------------------
+     P readElement...
+     P                 B
+     D                 PI                        like(bldexc)
+     D  i_element                     9A   value varying
+      *
+     D i               S             10I 0 inz
+     D value           S                   like(bldexc ) inz
+     D endTag          S                   like(xmlTag2) inz
+      *
+     C                   eval      i = 1
+     C                   eval      endTag = '</' + i_element + '>'
+     C                   dow       xmltag2 <> endTag
+     C                   eval      %subst(value: i: %len(xmlcode)) = xmlcode
+     C                   eval      i = i + %len(xmlcode)
+     C                   read      xmlinput
+     C                   enddo
+      *
+     C                   Return    value
+      *
+     P                 E
+      *--------------------------------------------------------------------
+      * Double quotes
+      *--------------------------------------------------------------------
+     P dblQuotes...
+     P                 B
+     D                 PI          2048A         varying
+     D  i_string                   2048A   value varying
+      *
+     D x               S             10I 0         inz
+     D string          S           2048A   varying inz
+      *
+     C                   For       x = 1 to %len(i_string)
+     C                   Eval      string = string + %subst(i_string: x:1)
+     C                   If        %subst(i_string: x : 1) = qs
+     C                   Eval      string = string + qs
+     C                   Endif
+     C                   Endfor
+      *
+     C                   Return    string
+      *
+     P                 E
+      *---------------------------------------------------------------------------------------------
+      *  Get Attribute Data from String
+      *---------------------------------------------------------------------------------------------
+     P getAttrData...
+     P                 B
+     D                 PI          2000A          varying                       like(string_t)
+     D  i_attr                       10a   value
+     D  i_string                   2000A   value  varying                       like(string_t)
+     D  i_default                  2000A   value  varying                       like(string_t)
+      *
+      *  return value
+     D attrData        S           2000A   varying inz                          like(string_t)
+      *
+      *  local fields
+     D attr            S             20a   varying inz
+     D lenAttr         S             10i 0 inz
+     D aa              S             10i 0 inz
+     D cc              S             10i 0 inz
+      *
+     D Qd              C                   const('"')
+      *-------------------------------------------------------------------*
+      *
+      *  find the keyword
+     C                   eval      attr = %trim(i_attr) + '=' + Qd
+      *
+     C                   eval      aa   = %scan(attr: i_string)
+     C                   if        aa = 0
+     C                   return    i_default
+     C                   endif
+      *
+     C                   eval      aa   = aa + %len(attr)
+     C                   eval      cc   = %scan(Qd: i_string: aa+1)
+      *
+      *  return the data between the double-quotes
+     C                   if        (cc-aa) > 0
+     C                   eval      attrData = %subst(i_string: aa: cc-aa)
+     C                   endif
+      *
+     C                   Return    attrData
+      *
+     P                 E
+      *---------------------------------------------------------------------------------------------
+      *  Load condition array
+      *---------------------------------------------------------------------------------------------
+     P loadConditions...
+     P                 B
+     D                 PI                  dim(32) like(condition)
+     D  i_conditions                128A   value
+      *
+      *  return value
+     D cnd_array       s                   dim(32) inz like(condition)
+     D pValue          s               *   inz
+     D x               s             10i 0 inz
+     D i               s             10i 0 inz
+     D cnd_value       s            128a   varying
+     D var_name        s             64a   varying
+     D var_value       s             64a   varying
+      *-------------------------------------------------------------------*
+      /FREE
+
+         i_conditions = uCase(i_conditions);
+
+         pValue = strtok(i_conditions: ';');
+         dow (pValue <> *null);
+            x = x + 1;
+            cnd_value = %str(pValue);
+            i = %scan('=': cnd_value);
+            if (i = 0);
+               cnd_array(x) = cnd_value;
+            else;
+               var_name = %subst(cnd_value: 1: i-1);
+               if (%subst(var_name: 1: 1) = '&');
+                  var_name = %subst(var_name: 2);
+               endif;
+               var_value = %subst(cnd_value: i+1);
+               setVariable(var_name: var_value);
+               cnd_array(x) = var_value;
+            endif;
+            pValue = strtok(*null: ';');
+         enddo;
+
+         return cnd_array;
+      /END-FREE
+     P                 E
+      *---------------------------------------------------------------------------------------------
+      *  Check for a condition
+      *---------------------------------------------------------------------------------------------
+     P isCondition...
+     P                 B
+     D                 PI              n
+     D  i_condList                 2000A   value
+      *
+      *  return value
+     D isCondition     S               n   inz
+     D pValue          S               *   inz
+     D aCondition      S             10a   inz
+      *-------------------------------------------------------------------*
+      *
+     C                   eval      i_condList = uCase(i_condList)
+      *
+     C                   if        (i_condList = '*NONE')  or
+     C                             (i_condList = ''     )
+     C                   eval      *in01 = *on
+     C                   else
+      *
+     C                   eval      pValue = strtok(i_condList: ' ')
+     C                   dow       pValue <> *null
+     C                   eval      aCondition = %str(pValue)
+     C     aCondition    lookup    cnd_array                              01
+     C                   if        not *in01
+     C                   leave
+     C                   endif
+     C                   eval      pValue = strtok(*null     : ' ')
+     C                   enddo
+      *
+     C                   endif
+      *
+     C                   if        *in01
+     C                   eval      isCondition = *on
+     C                   else
+     C                   eval      isCondition = *off
+     C                   endif
+      *
+     C                   Return    isCondition
+     P                 E
+      *---------------------------------------------------------------------------------------------
+      *  Get the current release level of the operation system
+      *---------------------------------------------------------------------------------------------
+     P getCurrentRelease...
+     P                 B
+     D                 PI            10A
+      *
+      *  QSZRTVPR API
+     D QSZRTVPR...
+     D                 PR                  extpgm('QSZRTVPR')
+     D  o_rcvVar                  65535A          options(*varsize)
+     D  i_lenRcvVar                  10I 0 const
+     D  i_format                      8A   const
+     D  o_prodInf                 65535A   const  options(*varsize)
+     D  io_errCode                65535A          options(*varsize)
+      *
+     D prdi0100        DS                  qualified
+     D  productID              1      7A   inz('*OPSYS')
+     D  releaseLvl             8     13A   inz('*CUR'  )
+     D  productOpt            14     17A   inz('0000'  )
+     D  loadID                18     27A   inz('*CODE' )
+      *  Shortened!:
+     D prdr0100        DS                  qualified
+     D  bytRet                 1      4I 0
+     D  bytAvl                 5      8I 0
+     D  reserved_1             9     12I 0
+     D  productID             13     19A
+     D  releaseLvl            20     25A
+      *  API error code
+     D errCode         DS
+     D  bytPrv                       10i 0 inz(0)
+     D  bytAvl                       10i 0 inz(0)
+      *-------------------------------------------------------------------*
+      *
+     C                   Callp     QSZRTVPR(prdr0100: %size(prdr0100):
+     C                                      'PRDR0100': prdi0100: errCode)
+     C                   Return    prdr0100.releaseLvl
+      *
+     P                 E
+      *---------------------------------------------------------------------------------------------
+      *  Check the release level
+      *---------------------------------------------------------------------------------------------
+     P isRelease...
+     P                 B
+     D                 PI              n
+     D  i_os_release                  6A   value
+     D  i_release                    10A   value
+      *
+      *  return value
+     D isRelease       S               n   inz(*off)
+      *  Release
+     D release         DS
+     D  r_operator             1      3a
+     D  r_space                4      4a
+     D  r_level                5     10a
+      *-------------------------------------------------------------------*
+      *
+     C                   If        i_release = '*CURRENT'
+     C                   Eval      isRelease = *on
+     C                   Else
+     C                   Eval      release = i_release
+     C                   Select
+     C                   When      r_operator = '*LT' and
+     C                             i_os_release < r_level
+     C                   Eval      isRelease = *on
+     C                   When      r_operator = '*EQ' and
+     C                             i_os_release = r_level
+     C                   Eval      isRelease = *on
+     C                   When      r_operator = '*GT' and
+     C                             i_os_release > r_level
+     C                   Eval      isRelease = *on
+     C                   When      r_operator = '*LE' and
+     C                             i_os_release <= r_level
+     C                   Eval      isRelease = *on
+     C                   When      r_operator = '*GE' and
+     C                             i_os_release >= r_level
+     C                   Eval      isRelease = *on
+     C                   Other
+     C                   Eval      isRelease = *off
+     C                   Endsl
+     C                   Endif
+      *
+     C                   Return    isRelease
+      *
+     P                 E
+      *---------------------------------------------------------------------------------------------
+      *  Replaces the value of a given keyword.
+      *---------------------------------------------------------------------------------------------
+     P setTargetRelease...
+     P                 B
+     D                 PI          2000A          varying
+     D  i_keyword                    10A   value  varying
+     D  i_string                   2000A   value  varying
+     D  i_value                      10A   value  varying
+      *
+      *  return value
+     D string          S           2000A   varying inz
+      *
+      *  helper fields
+     D x               S             10I 0 inz
+     D l               S             10I 0 inz
+     D tmpKeyword      S                   like(i_keyword) inz
+     D tmpString       S                   like(i_string ) inz
+     D tmpCmd          S             10A   inz
+      *-------------------------------------------------------------------*
+      /FREE
+
+         tmpKeyword = uCase(%trimR(i_keyword));
+         tmpString  = uCase(%trimR(i_string ));
+         x = %scan(' ': tmpString);
+         if x = 0;
+            return i_string;
+         endif;
+         tmpCmd = %subst(tmpString: 1: x);
+         if tmpCmd <> 'CRTRPGMOD' and
+            tmpCmd <> 'CRTRPGPGM' and
+            tmpCmd <> 'CRTCLMOD'  and
+            tmpCmd <> 'CRTCLPGM'  and
+            tmpCmd <> 'CRTCBLMOD' and
+            tmpCmd <> 'CRTCBLPGM' and
+            tmpCmd <> 'CRTCMOD'   and
+            tmpCmd <> 'CRTCPPMOD' and
+            tmpCmd <> 'CRTBNDC'   and
+            tmpCmd <> 'CRTBNDCBL' and
+            tmpCmd <> 'CRTBNDCL'  and
+            tmpCmd <> 'CRTBNDCPP' and
+            tmpCmd <> 'CRTBNDDIR' and
+            tmpCmd <> 'CRTBNDRPG' and
+            tmpCmd <> 'CRTPGM'    and
+            tmpCmd <> 'CRTSRVPGM' ;
+            return i_string;
+         endif;
+         x = %scan(tmpKeyword + '(': tmpString);
+         if x = 0;
+            return %trimR(i_string) +
+                   ' ' + tmpKeyword + '(' + %trimR(i_value) + ')';
+         endif;
+         l = %scan(')': tmpString: x + %len(i_keyword) + 1);
+         if l = 0;
+            return i_string;
+         endif;
+         l = l - x + 1;
+         string = %replace(tmpKeyword + '(' + %trimR(i_value) + ')'
+                           : i_string: x: l);
+         Return string;
+
+      /END-FREE
+     P                 E
+      *---------------------------------------------------------------------------------------------
+      *  Store field value.
+      *---------------------------------------------------------------------------------------------
+     P setVariable...
+     P                 B
+     D                 PI
+     D  i_fldName                    10A   value  varying
+     D  i_value                      64A   value  varying
+     D i               s             10I 0 inz
+      *-------------------------------------------------------------------*
+      /FREE
+
+         if (i_fldName = '');
+            return;
+         endif;
+
+         for i = 1 to fld_x;
+            if (uCase('&' + %trim(i_fldName)) = uCase(fld_name(i)));
+               fld_value(i) = i_value;
+               return;
+            endif;
+         endfor;
+
+         if (fld_x >= %elem(fld_name));
+            return;
+         endif;
+
+         fld_x = fld_x + 1;
+         fld_name(fld_x)  = uCase('&' + %trim(i_fldName));
+         fld_value(fld_x) = i_value;
+
+      /END-FREE
+     P                 E
+      *---------------------------------------------------------------------------------------------
+      *  get variable name from statement.
+      *---------------------------------------------------------------------------------------------
+     P getVarName...
+     P                 B
+     D                 PI            11a          varying
+     D  i_bldexc                           value  like(bldexc)
+     D  i_pos                        10i 0 value
+     D name            s             11a   varying inz
+     D CHARS           c                   '&ABCDEFGHIJKLMNOPQRSTUVWXYZ+
+     D                                      abcdefghijklmnopqrstuvwxyz+
+     D                                      1234567890_'
+      *-------------------------------------------------------------------*
+      /FREE
+
+         dow (i_pos<=%len(i_bldexc) and
+              %check(CHARS:%subst(i_bldexc:i_pos:1))=0);
+            name = name+%subst(i_bldexc:i_pos:1);
+            i_pos=i_pos+1;
+         enddo;
+
+         return name;
+
+      /END-FREE
+      *
+     P                 E
+      *---------------------------------------------------------------------------------------------
+      *  get variable value.
+      *---------------------------------------------------------------------------------------------
+     P getVarValue...
+     P                 B
+     D                 PI            64a          varying
+     D  i_name                       11a   value  varying
+     D i               s             10i 0 inz
+     D value           s             64a   varying inz('?')
+      *-------------------------------------------------------------------*
+      /FREE
+
+         for i=1 to fld_x;
+            if (ucase(fld_name(i))=uCase(i_name));
+               value=%trimR(fld_value(i));
+               leave;
+            endif;
+         endfor;
+
+         return value;
+
+      /END-FREE
+      *
+     P                 E
+      *---------------------------------------------------------------------------------------------
+      *  convert to upper case
+      *---------------------------------------------------------------------------------------------
+     P uCase...
+     P                 B
+     D                 PI          2000A          varying
+     D  i_string                   2000A   value  varying
+     D uCase           s           2000A   inz varying
+     D LC              C                   const('abcdefghijklmnopqrstuvwxyz')
+     D UC              C                   CONST('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+      *-------------------------------------------------------------------*
+      /FREE
+
+         uCase = %xlate(LC:UC:i_string);
+
+         return uCase;
+
+      /END-FREE
+     P                 E
+      * /// END   OF INSTALL PGM HERE   ****************************************** ///
+      * /// do not copy past this point ///
+]]>  </install_program>
+<qrycond
+  msg="'Create sample programs? (YES, NO)'"
+  values="YES        NO"
+  var="CRTTSTPGM">
+<![CDATA[
+]]>  </qrycond>
+<chgvar   condition="*NONE" var="SRCFILE" value="QRTVMBRL">
+<![CDATA[
+]]>  </chgvar>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*STATUS   "><![CDATA[
+Installing A_INSTALL  type CLLE - in progress.
+]]>  </sendmsg>
+<!-- START OF MEMBER  -->
+<mbr
+mbrname =  "A_INSTALL "
+mbrtype =  "CLLE      "
+mbrtext =  "RTVMBRL - Installer                               "
+srcfile =  "QRTVMBRL  "
+srclib  =  "selected  "
+srclen  =  "00112"
+srccssid=  "01141">
+<copysrc><![CDATA[
+     /* =================================================================== */
+     /*                                                                     */
+     /*  Documentation:                                                     */
+     /*                                                                     */
+     /*  Utility . . . : RTVMBRL                                            */
+     /*  Object  . . . : A_INSTALL  (PGM)                                   */
+     /*  Source member : A_INSTALL                                          */
+     /*  Source type . : CLLE                                               */
+     /*  Description   : RTVMBRL - Installer                                */
+     /*  Author  . . . : Thomas Raddatz   <thomas.raddatz@tools400.de>      */
+     /*                                                                     */
+     /* =================================================================== */
+     /*                                                                     */
+     /*  This software is free software, you can redistribute it and/or     */
+     /*  modify it under the terms of the GNU General Public License (GPL)  */
+     /*  as published by the Free Software Foundation.                      */
+     /*                                                                     */
+     /*  See GNU General Public License for details.                        */
+     /*          http://www.opensource.org                                  */
+     /*          http://www.opensource.org/licenses/gpl-license.html        */
+     /*                                                                     */
+     /* =================================================================== */
+     /*  History:                                                           */
+     /*                                                                     */
+     /*  Datum       Name          Änderung                                 */
+     /*  ----------  ------------  ---------------------------------------  */
+     /*                                                                     */
+     /* =================================================================== */
+     /*   >>PRE-COMPILER<<                                                  */
+     /*     >>CRTCMD<<    CRTBNDCL  PGM(QTEMP/&OB) +                        */
+     /*                             SRCFILE(&SL/&SF) SRCMBR(&SM);           */
+     /*     >>IMPORTANT<<                                                   */
+     /*       >>PARM<<    OPTION(*EVENTF);                                  */
+     /*     >>END-IMPORTANT<<                                               */
+     /*     >>EXECUTE<<                                                     */
+     /*     >>CMD<<       CALL   PGM(QTEMP/A_INSTALL) +                      */
+     /*                          PARM('*CURRENT' '&SF' '&LI' 'NO');         */
+     /*     >>CMD<<       DLTPGM PGM(QTEMP/A_INSTALL);                      */
+     /*   >>END-PRE-COMPILER<<                                              */
+     /* =================================================================== */
+             PGM        PARM(&TGTRLS &SRCFILE &TOLIB &CRTTSTPGM)
+
+             DCL        VAR(&TGTRLS   ) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&SRCFILE  ) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&TOLIB    ) TYPE(*CHAR) LEN(10)
+             DCL        VAR(&CRTTSTPGM) TYPE(*CHAR) LEN(10)
+
+             DCL        VAR(&SRCLIB   ) TYPE(*CHAR) LEN(10)
+
+             CHGVAR     VAR(&SRCLIB) VALUE(&TOLIB   )
+
+     /* -------------------------------- */
+     /*  Delete old objects              */
+     /* -------------------------------- */
+             DLTMOD     MODULE(&TOLIB/RTVMBRL)
+             MONMSG     MSGID(CPF2105)
+
+             DLTSRVPGM  SRVPGM(&TOLIB/RTVMBRL)
+             MONMSG     MSGID(CPF2105)
+
+             DLTMOD     MODULE(&TOLIB/RTVMBRL_T)
+             MONMSG     MSGID(CPF2105)
+
+             DLTPGM     PGM(&TOLIB/RTVMBRL_T)
+             MONMSG     MSGID(CPF2105)
+
+     /* -------------------------------- */
+     /*  Create modules                  */
+     /* -------------------------------- */
+             CRTRPGMOD  MODULE(&TOLIB/RTVMBRLR1) +
+                          SRCFILE(&SRCLIB/&SRCFILE) SRCMBR(*MODULE) +
+                          DBGVIEW(*LIST) TRUNCNBR(*NO) +
+                          TGTRLS(&TGTRLS)
+             DLTSPLF    FILE(RTVMBRLR1 ) JOB(*) SPLNBR(*LAST)
+             MONMSG     MSGID(CPF0000)
+
+     /* -------------------------------- */
+     /*  Create service programs         */
+     /* -------------------------------- */
+             CRTSRVPGM  SRVPGM(&TOLIB/RTVMBRL) +
+                          MODULE(&TOLIB/RTVMBRLR1) +
+                          EXPORT(*SRCFILE) +
+                          SRCFILE(&SRCLIB/&SRCFILE) +
+                          SRCMBR(RTVMBRL) +
+                          ACTGRP(*CALLER) +
+                          BNDSRVPGM(*LIBL/BASICS1) +
+                          DETAIL(*BASIC) +
+                          TEXT('Retrieve Member List API') +
+                          TGTRLS(&TGTRLS)
+             DLTSPLF    FILE(RTVMBRL) JOB(*) SPLNBR(*LAST)
+             MONMSG     MSGID(CPF0000)
+
+     /* -------------------------------- */
+     /*  Create test programs            */
+     /* -------------------------------- */
+             IF         COND(&CRTTSTPGM *EQ 'YES') THEN(DO)
+                CRTRPGMOD  MODULE(&TOLIB/RTVMBRL_T) +
+                             SRCFILE(&SRCLIB/&SRCFILE) +
+                             SRCMBR(*MODULE) +
+                             DBGVIEW(*LIST) +
+                             TRUNCNBR(*NO) +
+                             TGTRLS(&TGTRLS)
+                DLTSPLF    FILE(RTVMBRL_T) JOB(*) SPLNBR(*LAST)
+                MONMSG     MSGID(CPF0000)
+
+                CRTPGM     PGM(&TOLIB/RTVMBRL_T) +
+                             MODULE(*PGM) +
+                             BNDSRVPGM(&TOLIB/RTVMBRL) +
+                             ACTGRP(*NEW) +
+                             DETAIL(*BASIC) +
+                             TGTRLS(&TGTRLS)
+                DLTSPLF    FILE(RTVMBRL_T) JOB(*) SPLNBR(*LAST)
+                MONMSG     MSGID(CPF0000)
+
+                DLTMOD    MODULE(&TOLIB/RTVMBRL_T)
+             ENDDO
+
+     /* -------------------------------- */
+     /*  Delete obsolete objects         */
+     /* -------------------------------- */
+             DLTMOD     MODULE(&TOLIB/RTVMBRLR1)
+
+             ENDPGM
+]]>  </copysrc>
+</mbr>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*STATUS   "><![CDATA[
+Installing CEELIB  type RPGLE - in progress.
+]]>  </sendmsg>
+<!-- START OF MEMBER  -->
+<mbr
+mbrname =  "CEELIB    "
+mbrtype =  "RPGLE     "
+mbrtext =  "Prototypes of CEE APIs                   (include)"
+srcfile =  "QRTVMBRL  "
+srclib  =  "selected  "
+srclen  =  "00112"
+srccssid=  "01141">
+<copysrc><![CDATA[
+**free
+/if NOT            DEFINED(CEELIB)
+/define CEELIB
+
+// ---------------------------------------------------------------
+//   Program or Procedure Call APIs
+// ---------------------------------------------------------------
+
+//  Condition token, used as feedback code
+dcl-ds cee_fc_t qualified based(pDummy);
+  Condition_ID char(4) pos(1);
+  MsgSev       int(5) pos(1);
+  Msg_No       uns(5) pos(3);
+  Flags        char(1) pos(5);
+  Facility_ID  char(3) pos(6);
+  I_S_Info     char(4) pos(9);
+end-ds;
+
+//  Retrieve Operational Descriptor Information (CEEDOD)
+dcl-pr CEEDOD extproc('CEEDOD');
+  i_posn     int(10) const;
+  o_desctype int(10);
+  o_datatype int(10);
+  o_descinf1 int(10);
+  o_descinf2 int(10);
+  o_datalen  int(10);
+  o_fc       char(12) options(*omit);
+end-pr;
+
+//  Reference fields for CEEDOD API
+dcl-ds descInf_t based(pDummy) qualified;
+  desctype int(10);
+  datatype int(10);
+  descinf1 int(10);
+  descinf2 int(10);
+  datalen  int(10);
+end-ds;
+
+//  Test for Omitted Argument (CEETSTA) API
+dcl-pr CEETSTA extproc('CEETSTA');
+  io_isPresent int(10);
+  i_argNum     int(10) const;
+  o_fc         char(12) options(*omit);
+end-pr;
+
+//  Get String Information (CEEGSI) API
+dcl-pr CEEGSI extproc('CEEGSI');
+  i_posn     int(10) const;
+  o_datatype int(10);
+  o_curlen   int(10);
+  o_maxlen   int(10);
+  o_fb       char(12) options(*omit);
+end-pr;
+
+//  Reference fields for CEEGSI API
+dcl-ds strInf_t based(pDummy) qualified;
+  datatype int(10);
+  curlen   int(10);
+  maxlen   int(10);
+end-ds;
+
+// ---------------------------------------------------------------
+//   Math APIs
+// ---------------------------------------------------------------
+
+//  Logarithm base 10 (double float)
+dcl-pr CEESDLG1 extproc('CEESDLG1');
+  i_value  float(8) const;
+  o_result float(8);
+end-pr;
+
+// ---------------------------------------------------------------
+//   ILE CEE Date and Time APIs
+// ---------------------------------------------------------------
+
+//  Calculate Day of Week from Lilian Date (CEEDYWK) API
+dcl-pr CEEDYWK opdesc extproc('CEEDYWK');
+  lilian_date int(10) const;
+  day_no      int(10);
+  feedback    char(12) options(*omit);
+end-pr;
+
+//  Convert Lilian Date to Character Format (CEEDATE) API
+dcl-pr CEEDATE opdesc extproc('CEEDATE');
+  lilian_date int(10) const;
+  date_format char(80) options(*varsize) const;
+  char_date   char(80) options(*varsize);
+  feedback    char(12) options(*omit);
+end-pr;
+
+//  Convert Date to Lilian Format (CEEDAYS) API
+dcl-pr CEEDAYS opdesc extproc('CEEDAYS');
+  char_date   char(80) options(*varsize) const;
+  date_format char(80) options(*varsize) const;
+  lilian_date int(10);
+  feedback    char(12) options(*omit);
+end-pr;
+
+//  Convert Seconds to Character Timestamp (CEEDATM) API
+dcl-pr CEEDATM opdesc extproc('CEEDATM');
+  input_seconds    float(8) const;
+  picture_string   char(80) options(*varsize) const;
+  output_timestamp char(80) options(*varsize);
+  feedback         char(12) options(*omit);
+end-pr;
+
+//  Get Offset from Universal Time Coordinated to Local Time (CEEUTCO) API
+dcl-pr CEEUTCO extproc('CEEUTCO');
+  offsethours   int(10);
+  offsetminutes int(10);
+  offsetseconds float(8);
+  feedback      char(12) options(*nopass);
+end-pr;
+
+dcl-ds cee_utco_t qualified based(pDummy);
+  offhours int(10);
+  offmins  int(10);
+  offsecs  float(8);
+end-ds;
+
+//  Convert Timestamp to Number of Seconds (CEESECS) API
+dcl-pr CEESECS extproc('CEESECS') opdesc;
+  inTimestamp char(255) options(*varsize) const;
+  inPicture   char(255) options(*varsize) const;
+  outSeconds  float(8);
+  outFC       char(12) options(*omit);
+end-pr;
+
+// ---------------------------------------------------------------
+//   Activation Group and Control Flow APIs
+// ---------------------------------------------------------------
+
+//  Register Activation Group Exit Procedure (CEE4RAGE) API
+dcl-pr CEE4RAGE extproc('CEE4RAGE');
+  i_pProc pointer(*proc) const;
+  fc      char(12) options(*omit);
+end-pr;
+
+dcl-c END_ACTGRP_CODE_EXCEPTION_MESSAGE x'40000000';
+dcl-c END_ACTGRP_CODE_ABNORMAL_END x'00008000';
+dcl-c END_ACTGRP_CODE_ACTGRP_IS_ENDING x'00004000';
+dcl-c END_ACTGRP_CODE_INIT_BY_RCLACTGRP x'00002000';
+dcl-c END_ACTGRP_CODE_INIT_BY_JOB_END x'00001000';
+dcl-c END_ACTGRP_CODE_INIT_BY_EXIT_VERB x'00000800';
+dcl-c END_ACTGRP_CODE_INIT_BY_FUNCTION_CHECK x'00000400';
+dcl-c END_ACTGRP_CODE_INIT_BY_OUT_OF_SCOPE_JUMP x'00000200';
+
+dcl-pr CEE4RAGE_user_exit extproc('CEE4RAGE_user_exit');
+  i_ag_mark      uns(10) const;
+  i_reason       uns(10) const;
+  io_result_code uns(10) const;
+  io_user_rc     int(10) const;
+end-pr;
+
+//  Register Call Stack Entry Termination User Exit Procedure (CEERTX)
+dcl-pr CEERTX extproc('CEERTX');
+  i_procPtr  pointer(*proc) const;
+  i_rtxToken pointer options(*omit) const;
+  o_fc       char(12) options(*omit);
+end-pr;
+
+dcl-pr CEERTX_user_exit extproc('CEERTX_user_exit');
+  i_rtxToken pointer const;
+end-pr;
+
+//  Unregister Call Stack Entry Termination User Exit Procedure (CEEUTX)
+dcl-pr CEEUTX extproc('CEEUTX');
+  i_procPtr pointer(*proc) const;
+  o_fc      char(12) options(*omit);
+end-pr;
+
+/endif
+]]>  </copysrc>
+</mbr>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*STATUS   "><![CDATA[
+Installing CLIB  type RPGLE - in progress.
+]]>  </sendmsg>
+<!-- START OF MEMBER  -->
+<mbr
+mbrname =  "CLIB      "
+mbrtype =  "RPGLE     "
+mbrtext =  "Prototypes of C-Library                  (include)"
+srcfile =  "QRTVMBRL  "
+srclib  =  "selected  "
+srclen  =  "00112"
+srccssid=  "01141">
+<copysrc><![CDATA[
+**free
+/if NOT DEFINED(CLIB)
+/define CLIB
+
+//  Basic C data types
+/if NOT DEFINED(C_DATA_TYPES)
+/define C_DATA_TYPES
+// C Data Types
+dcl-s char_t char(1) based(pDummy);
+dcl-s short_t int(5) based(pDummy);
+dcl-s ushort_t uns(5) based(pDummy);
+dcl-s int_t int(10) based(pDummy);
+dcl-s uint_t uns(10) based(pDummy);
+dcl-s long_t int(10) based(pDummy);
+dcl-s ulong_t uns(10) based(pDummy);
+dcl-s float_t float(4) based(pDummy);
+dcl-s double_t float(8) based(pDummy);
+/endif
+
+//  stdin, stdout and stderr
+dcl-s stdin pointer import('_C_IFS_stdin');
+dcl-s stdout pointer import('_C_IFS_stdout');
+dcl-s stderr pointer import('_C_IFS_stderr');
+
+//  system -- Execute a Command
+//     Return value       Meaning
+//     ----------------   --------------------------------------
+//     0                  the command is successful
+//     -1                 for a NULL pointer
+//     1                  the command fails
+dcl-pr system int(10) extproc('system');
+  i_clCommand pointer options(*string) value;
+end-pr;
+
+dcl-s EXCP_MSGID char(7) import('_EXCP_MSGID');
+
+//  time -- Determine Current Time
+//     The time() function returns the current calendar time.
+//     The return value is also stored in the location that
+//     is given by timeptr.
+dcl-pr time int(10) extproc('time');
+  timeptr pointer value;
+end-pr;
+
+//  strftime -- Convert to Formatted Time
+//     strftime() returns the number of bytes placed into the
+//     array pointed to by 'dest'.
+dcl-pr strftime int(10) extproc('strftime');
+  dest    pointer value;
+  maxsize int(10) value;
+  format  pointer options(*string) value;
+  timeptr likeds(tm_t) const;
+end-pr;
+
+dcl-ds tm_t qualified based(pDummy);
+  tm_sec   int(10);
+  tm_min   int(10);
+  tm_hour  int(10);
+  tm_mday  int(10);
+  tm_mon   int(10);
+  tm_year  int(10);
+  tm_wday  int(10);
+  tm_yday  int(10);
+  tm_isdst int(10);
+end-ds;
+
+//  localtime() -- Correct Local Time, returns tm_t*
+//     The localtime() function converts a time value, in
+//     seconds, to a structure of type tm.
+dcl-pr localtime pointer extproc('localtime');
+  time int(10) const;
+end-pr;
+
+//  localtime_r() -- Correct Local Time
+//     It is the same as localtime() except that it passes
+//     in the place to store the returned structure result.
+dcl-pr localtime_r pointer extproc('localtime_r');
+  time int(10) const;
+  tm   likeds(tm_t) const;
+end-pr;
+
+//  strtok -- Tokenize String
+//     The first time the strtok() function is called, it returns
+//     a pointer to the first token in i_string. In later calls
+//     it returns a pointer to the next token. A null pointer is
+//     returned when there are no more tokens.
+dcl-pr strtok pointer extproc('strtok');
+  i_string     pointer options(*string) value;
+  i_delimiters pointer options(*string) value;
+end-pr;
+
+//  atoi -- Convert Character String to Integer
+//     The atoi() function returns an int value of the
+//     interpreted input string.
+dcl-pr atoi int(10) extproc('atoi');
+  i_string pointer options(*string) value;
+end-pr;
+
+//  memcpy -- Copy Bytes
+//     The behavior is undefined if copying takes place
+//     between objects that overlap.
+//     The memcpy() function returns a pointer to dest.
+dcl-pr memcpy pointer extproc('memcpy');
+  i_pDest pointer value;
+  i_pSrc  pointer value;
+  i_count uns(10) value;
+end-pr;
+
+//  memset -- Set Bytes to Value
+//     The memset() function returns a pointer to dest.
+dcl-pr memset pointer extproc('memset');
+  i_pDest pointer value;
+  i_char  int(10) value;
+  i_count uns(10) value;
+end-pr;
+
+//  memmove -- Copy Bytes
+//     memmove allows copying between objects that may overlap
+//     as if src is first copied into a temporary array.
+//     The memmove() function returns a pointer to dest.
+dcl-pr memmove pointer extproc('memmove');
+  pMemDest pointer value;
+  pMemSrc  pointer value;
+  memSize  like(size_t) value;
+end-pr;
+
+//  memcmp -- Compare Buffers
+//     Return value       Meaning
+//     ----------------   --------------------------------------
+//     Less than 0        buf1 less than buf2
+//     0                  buf1 identical to buf2
+//     Greater than 0     buf1 greater than buf2
+dcl-pr memcmp int(10) extproc('memcmp');
+  pBuf1 pointer value;
+  pBuf2 pointer value;
+  count like(size_t) value;
+end-pr;
+
+//  memicmp -- Compare Bytes (ignore case)
+//     Return value       Meaning
+//     ----------------   --------------------------------------
+//     Less than 0        buf1 less than buf2
+//     0                  buf1 identical to buf2
+//     Greater than 0     buf1 greater than buf2
+dcl-pr memicmp int(10) extproc('__memicmp');
+  pBuf1 pointer value;
+  pBuf2 pointer value;
+  count uns(10) value;
+end-pr;
+
+//  strcmp() -- Compare Strings
+//     Return value       Meaning
+//     ----------------   --------------------------------------
+//     Less than 0        string 1 less than string 2
+//     0                  string 1 equivalent to string 2
+//     Greater than 0     string 1 greater than string 2
+dcl-pr strcmp int(10) extproc('strcmp');
+  string1 pointer options(*string) value;
+  string2 pointer options(*string) value;
+end-pr;
+
+//  strcasecmp() -- Compare Strings without Case Sensitivity
+//     Return value       Meaning
+//     ----------------   --------------------------------------
+//     Less than 0        string 1 less than string 2
+//     0                  string 1 equivalent to string 2
+//     Greater than 0     string 1 greater than string 2
+dcl-pr strcasecmp int(10) extproc('strcasecmp');
+  string1 pointer options(*string) value;
+  string2 pointer options(*string) value;
+end-pr;
+/if NOT DEFINED(TESTPTR)
+/define TESTPTR
+
+//  Test Pointer (TESTPTR)
+dcl-pr testptr int(10) extproc('_TESTPTR');
+  i_ptr       pointer value;
+  i_test_type int(10) value;
+end-pr;
+
+dcl-c cTESTPTR_TYPE_PROCPTR 0;
+dcl-c cTESTPTR_NO_OPTIMIZED_PARAMETER_PASSING 0;
+dcl-c cTESTPTR_OPTIMIZED_PARAMETER_PASSING 1;
+
+dcl-c cTESTPTR_TYPE_MEMPTR 1;
+dcl-c cTESTPTR_NON_TERASPACE 0;
+dcl-c cTESTPTR_TERASPACE 1;
+
+dcl-c cTESTPTR_ERROR_NOT_EXIST x'2401';
+dcl-c cTESTPTR_ERROR_INVALID x'2402';
+dcl-c cTESTPTR_ERROR_OBJECT_DESTROYED x'2202';
+/endif
+
+//  malloc() - Reserve Storage Block
+dcl-pr TS_malloc pointer extproc('_C_TS_malloc');
+  i_size uns(10) value;
+end-pr;
+
+//  realloc() - Change Reserved Storage Block Size
+dcl-pr TS_realloc pointer extproc('_C_TS_realloc');
+  i_pMem pointer value;
+  i_size uns(10) value;
+end-pr;
+
+//  free() - Release Storage Blocks
+dcl-pr TS_free extproc('_C_TS_free');
+  i_pMem pointer value;
+end-pr;
+
+//  _C_TS_malloc_info() - Determine amount of teraspace memory used
+dcl-pr TS_malloc_info int(10) extproc('_C_TS_malloc_info');
+  o_c_mallinfo likeds(C_mallinfo_t) const;
+  i_size       uns(10) value;
+end-pr;
+
+//  _C_TS_malloc_debug() - Determine amount of teraspace memory
+//                         used (with optional dumps and verification)
+dcl-pr TS_malloc_debug int(10) extproc('_C_TS_malloc_debug');
+  i_dump_level uns(10) value;
+  i_vrfy_level uns(10) value;
+  o_c_mallinfo likeds(C_mallinfo_t) const;
+  i_size       uns(10) value;
+end-pr;
+
+// The following are possible values for the dump_level parameter
+dcl-c C_NO_DUMPS 0;
+//  Dumps the _C_mallinfo_t structure:
+dcl-c C_DUMP_TOTALS 1;
+//  Does a hex dump of all allocated chunks of teraspace storage,
+//  this is the entire 512K chunk of storage:
+dcl-c C_DUMP_CHUNKS 2;
+//  Dumps each of the allocated nodes.
+//  There is a node for each malloc performed with the header
+//  associated with that malloc:
+dcl-c C_DUMP_NODES 3;
+//  Dumps the cartesian tree used to keep track of the freed nodes:
+dcl-c C_DUMP_TREE 4;
+dcl-c C_DUMP_ALL 9999;
+
+//  The following are possible values for the verify_level parameter
+dcl-c C_NO_CHECKS 0;
+dcl-c C_CHECK_TOTALS 1;
+dcl-c C_CHECK_CHUNKS 2;
+dcl-c C_CHECK_NODES 3;
+dcl-c C_CHECK_TREE 4;
+dcl-c C_CHECK_ALL 9998;
+//  Will call abort() if verification fails
+dcl-c C_CHECK_ALL_AND_ABORT 9999;
+
+// The following structure is used to return information
+// from the _C_TS_malloc_info routine.  The fields are:
+//   total_bytes        - bytes allocated from system
+//                        (high water mark)
+//   allocated_bytes    - number of allocated bytes
+//   unallocated_bytes  - number of unallocated bytes
+//   allocated_blocks   - number of allocated blocks
+//   unallocated_blocks - number of unallocated blocks
+//   requested_bytes    - bytes actually requested from malloc
+//   pad_bytes          - bytes used to pad allocation length
+//                        to a multiple of 16
+//   overhead_bytes     - bytes used for malloc overhead
+dcl-ds C_mallinfo_t qualified based(pDummy);
+  total_bytes        int(20);
+  allocated_bytes    int(20);
+  unallocated_bytes  int(20);
+  allocated_blocks   int(20);
+  unallocated_blocks int(20);
+  requested_bytes    int(20);
+  pad_bytes          int(20);
+  overhead_bytes     int(20);
+end-ds;
+
+//  malloc -- Reserve Storage Block
+dcl-pr malloc pointer extproc('malloc');
+  i_size uns(10) value;
+end-pr;
+
+//  realloc -- Change Reserved Storage Block Size
+dcl-pr realloc pointer extproc('realloc');
+  i_pMem pointer value;
+  i_size uns(10) value;
+end-pr;
+
+//  free -- Release Storage Blocks
+dcl-pr free extproc('free');
+  i_pMem pointer value;
+end-pr;
+
+//  srand -- Set Seed for rand Function   e.g.:   srand(getSeed(*null))
+dcl-pr srand extproc('srand');
+  i_seed uns(10) value;
+end-pr;
+
+//  rand -- Generate Random Number                x = rand()
+dcl-pr rand int(10) extproc('rand');
+end-pr;
+
+dcl-c RAND_MAX 32767;
+
+//  getSeed -- Get Seed for srand function
+dcl-pr getSeed int(10) extproc('time');
+  i_timePtr pointer value;
+end-pr;
+
+//  strlen -- Determine String Length
+dcl-pr strlen uns(10) extproc('strlen');
+  i_string pointer value;
+end-pr;
+
+//  tmpnam -- Produce Temporary File Name
+dcl-pr tmpnam pointer extproc('tmpnam');
+  pTmpNme pointer value;
+end-pr;
+
+//  _C_IFS_tmpnam -- Produce Temporary File Name for the IFS file system
+dcl-pr ifs_tmpnam pointer extproc('_C_IFS_tmpnam');
+  fileName pointer value;
+end-pr;
+
+dcl-c L_tmpnam 39; // ! <stdio.h>
+
+dcl-c TMP_MAX 32767; // ! <stdio.h>
+
+//  qsort -- Sort Array
+dcl-pr qsort pointer extproc('qsort');
+  memPtr    pointer value;
+  numElem   like(size_t) value;
+  width     like(size_t) value;
+  pSortFunc pointer(*proc) value;
+end-pr;
+
+//  bsearch -- Search Arrays
+dcl-pr bsearch pointer extproc('bsearch');
+  keyPtr     pointer value;
+  memPtr     pointer value;
+  numElem    like(size_t) value;
+  width      like(size_t) value;
+  pSearchFnc pointer(*proc) value;
+end-pr;
+
+//  iconv_open()--Code Conversion Allocation API
+dcl-pr iconv_open extproc('iconv_open') like(iconv_t);
+  i_toCode   pointer value;
+  i_fromCode pointer value;
+end-pr;
+
+dcl-ds iconv_t qualified based(pDummy) align;
+  return_value int(10);
+  cd           int(10) dim(12);
+end-ds;
+
+dcl-ds iconv_fromcode_t qualified based(pDummy);
+  ibmccsid      char(8);
+  ccsid         char(5);
+  convAlt       char(3);
+  substAlt      char(1);
+  shiftStateAlt char(1);
+  inpLengthOpt  char(1);
+  errOption     char(1);
+  reserved      char(12);
+end-ds;
+
+dcl-ds iconv_tocode_t qualified based(pDummy);
+  ibmccsid char(8);
+  ccsid    char(5);
+  reserved char(19);
+end-ds;
+
+//  QtqIconvOpen()--Code Conversion Allocation API
+dcl-pr QtqIconv_open extproc('QtqIconvOpen') likeds(iconv_t);
+  i_toCode   likeds(QtqCode_t) const;
+  i_fromCode likeds(QtqCode_t) const;
+end-pr;
+
+dcl-ds QtqCode_t qualified based(pDummy);
+  ccsid         int(10);
+  conversionA   int(10);
+  substitutionA int(10);
+  shiftStateA   int(10);
+  inpLenOpt     int(10);
+  errOptMxdDta  int(10);
+  reserved      char(12);
+end-ds;
+
+//  iconv()--Code Conversion API
+dcl-pr iconv uns(10) extproc('iconv');
+  i_cd         likeds(iconv_t) value;
+  i_pInBuf     pointer;
+  i_inBytLeft  uns(10);
+  i_pOutBuf    pointer;
+  i_outBytLeft uns(10);
+end-pr;
+
+dcl-c cICONV_ERROR 4294967295;
+
+//  iconv_close()--Code Conversion Deallocation API
+dcl-pr iconv_close int(10) extproc('iconv_close');
+  i_cd likeds(iconv_t) value;
+end-pr;
+
+//  0/-1 = stat()--Get File Information                include <sys/stat.h>
+dcl-pr stat int(10) extproc('stat'); // = int
+  i_pPath pointer options(*string) value; // = *path
+  i_pStat pointer value; // = *buf
+end-pr;
+
+//  0/-1 = fstat()--Get File Information by Descriptor include <sys/stat.h>
+dcl-pr fstat int(10) extproc('fstat'); // = int
+  i_fd   int(10) value; // = int
+  i_stat likeds(st_stat_t) const; // = *buf
+end-pr;
+
+//  0/-1 = lstat()--Get File or Link Information       include <sys/stat.h>
+dcl-pr lstat int(10) extproc('lstat'); // = int
+  i_pPath pointer options(*string) value; // = *path
+  i_pStat pointer value; // = *buf
+end-pr;
+
+dcl-ds st_stat_t qualified based(pDummy) align;
+  mode       uns(10); // mode_t =uint
+  ino        uns(10); // ino_t  =uint
+  nlink      uns(5); // nlink_t=ushort
+  reserved2  char(2);
+  uid        uns(10); // uid_t  =uint
+  gid        uns(10); // gid_t  =uint
+  size       int(10); // off_t  =int
+  atime      int(10); // time_t =long
+  mtime      int(10); // time_t =long
+  ctime      int(10); // time_t =long
+  dev        uns(10); // dev_t  =uint
+  blksize    uns(10); // size_t =uint
+  allocsize  uns(10); // ulong
+  objtype    char(11); // qp0l_objtype_t
+  reserved3  char(1);
+  codepage   uns(5); // ushort
+  ccsid      uns(5); // ushort
+  rdev       uns(10); // dev_t  =uint
+  nlink32    uns(10); // nlink32_t=ulng
+  rdev64     uns(20); // dev64_t=ullng
+  dev64      uns(20); // dev64_t=ullng
+  reserved1  char(36);
+  ino_gen_id uns(10); // uint
+end-ds;
+
+//  Qp0lGetAttr()--Get Attributes
+dcl-pr Qp0lGetAttr int(10) extproc('Qp0lGetAttr');
+  i_path       likeds(Qlg_Path_Name_t) const;
+  i_attrArray  like(Qlg_attrArray_t) const;
+  i_pBuffer    pointer value;
+  i_bytPrv     uns(10) value;
+  o_sizeNeeded uns(10);
+  o_bytRet     uns(10);
+  i_followLnk  uns(10) value;
+end-pr;
+
+/if not defined(Qlg_Path_Name)
+/define Qlg_Path_Name
+dcl-ds Qlg_Path_Name_t qualified align based(pDummy);
+  CCSID               int(10);
+  Country_ID          char(2);
+  Language_ID         char(3);
+  Reserved            char(3);
+  Path_Type           uns(10);
+  Path_Length         int(10);
+  Path_Name_Delimiter char(2);
+  Reserved2           char(10);
+  Path_Name           char(256);
+end-ds;
+
+dcl-c QLG_PATH_JOB_CCSID 0;
+dcl-c QLG_PATH_JOB_COUNTRYID X'0000';
+dcl-c QLG_PATH_JOB_LANGUAGEID X'000000';
+
+//  The Path_Name is a character string and the delimiter is one byte long.
+dcl-c QLG_CHAR_SINGLE 0;
+
+//  The Path_Name is a pointer and the delimiter is one byte long.
+dcl-c QLG_PTR_SINGLE 1;
+
+//  The Path_Name is a character string and the delimiter is two bytes long.
+dcl-c QLG_CHAR_DOUBLE 2;
+
+//  The Path_Name is a pointer and the delimiter is two bytes long.
+dcl-c QLG_PTR_DOUBLE 3;
+
+/endif
+
+dcl-ds Qlg_attrArray_t qualified based(pDummy);
+  numE int(10);
+  attr int(10) dim(64);
+end-ds;
+
+dcl-ds Qlg_rtnAttr_t qualified based(pDummy);
+  ofsNextAttr int(10);
+  ID          int(10);
+  size        int(10);
+  reserved    char(4);
+end-ds;
+
+dcl-c QP0L_ATTR_OBJTYPE 0; // CHAR(10)
+dcl-c QP0L_ATTR_DATA_SIZE 1; // UINT(4)
+dcl-c QP0L_ATTR_ALLOC_SIZE 2; // UINT(4)
+dcl-c QP0L_ATTR_EXTENDED_ATTR_SIZE 3; // UINT(4)
+dcl-c QP0L_ATTR_CREATE_TIME 4; // UINT(4)
+dcl-c QP0L_ATTR_ACCESS_TIME 5; // UINT(4)
+dcl-c QP0L_ATTR_CHANGE_TIME 6; // UINT(4)
+dcl-c QP0L_ATTR_MODIFY_TIME 7; // UINT(4)
+dcl-c QP0L_ATTR_STG_FREE 8; // CHAR(1)
+dcl-c QP0L_ATTR_CHECKED_OUT 9; // chkOut Fmt
+dcl-c QP0L_ATTR_LOCAL_REMOTE 10; // CHAR(1)
+
+dcl-c QP0L_DONOT_FOLLOW_SYMLNK x'00';
+dcl-c QP0L_FOLLOW_SYMLNK x'01';
+
+dcl-c QP0L_NOT_CHECKED_OUT x'00';
+dcl-c QP0L_CHECKED_OUT x'01';
+
+dcl-c QP0L_LOCAL_OBJ x'01';
+dcl-c QP0L_REMOTE_OBJ x'02';
+
+//  QlgGetcwd()--Get Current Directory (using NLS-enabled path name)
+//  Returns: Qlg_Path_Name_T
+dcl-pr QlgGetcwd pointer extproc('QlgGetcwd');
+  o_path likeds(Qlg_Path_Name_t) const;
+  i_size like(size_t) value;
+end-pr;
+
+//  getcwd()--Get Current Directory
+dcl-pr getcwd pointer extproc('getcwd');
+  o_path char(65535) options(*varsize) const;
+  i_size like(size_t) value;
+end-pr;
+
+//  QlgChdir()--Change Current Directory (using NLS-enabled path name)
+//  Returns: Qlg_Path_Name_T
+dcl-pr QlgChdir int(10) extproc('QlgChdir');
+  i_path likeds(Qlg_Path_Name_t) const;
+end-pr;
+
+//  chdir()--Change Current Directory
+dcl-pr chdir int(10) extproc('chdir');
+  i_path pointer options(*string) value;
+end-pr;
+
+//  QSYSINC/SYS.TYPES
+dcl-s off_t int(10) based(pDummy);
+dcl-s size_t uns(10) based(pDummy);
+dcl-s ssize_t int(10) based(pDummy);
+dcl-s time_t int(10) based(pDummy);
+
+//  0/-1 = chmod()--Change File Authorizations         include <sys/stat.h>
+dcl-pr chmod int(10) extproc('chmod'); // = int
+  i_pPath pointer options(*string) value; // = *path
+  i_mode  uns(10) value; // = mode_t =uint
+end-pr;
+
+//  mkdir()--Make Directory                            include <sys/stat.h>
+dcl-pr mkdir int(10) extproc('mkdir'); // = rc
+  i_pPath pointer options(*string) value; // = *path
+  i_mode  uns(10) value; // = mode_t =uint
+end-pr;
+
+//  rmdir()--Remove Directory                          include <sys/stat.h>
+dcl-pr rmdir int(10) extproc('rmdir'); // = rc
+  i_pPath pointer options(*string) value; // = *path
+end-pr;
+
+//  opendir()--Open Directory                          include <dirent.h>
+dcl-pr opendir pointer extproc('opendir'); // = *DIR
+  i_pDirName pointer options(*string) value; // = *dirname
+end-pr;
+
+//  readdir()--Read Directory Entry
+dcl-pr readdir pointer extproc('readdir'); // = *dirent
+  i_dirp pointer value; // = *DIR
+end-pr;
+
+dcl-ds dirent_t qualified based(pDummy);
+  d_reserv1       char(16);
+  d_fileno_gen_id uns(10);
+  d_fileno        uns(10);
+  d_reclen        uns(10);
+  d_reserv3       int(10);
+  d_reserv4       char(8);
+/if not defined(*V5R2M0)
+  d_nlsinfo       like(qlg_nls_t);
+/else
+  d_nlsinfo       likeds(qlg_nls_t);
+/endif
+  d_namelen       uns(10);
+  d_name          char(640);
+end-ds;
+
+dcl-ds qlg_nls_t qualified based(pDummy) align;
+  ccsid        int(10);
+  country_id   char(2);
+  language_id  char(3);
+  nls_reserved char(3);
+end-ds;
+
+//  rewinddir()--Reset Directory Stream to Beginning
+dcl-pr rewinddir extproc('rewinddir');
+  i_dirp pointer value; // = *DIR
+end-pr;
+
+//  closedir()--Close Directory
+dcl-pr closedir int(10) extproc('closedir'); // = rc
+  i_dirp pointer value; // = *DIR
+end-pr;
+
+//  fd/-1 = open()--Open File                          include <fcntl.h>
+dcl-pr open int(10) extproc('open'); // = int
+  i_pPath       pointer options(*string) value; // = *path
+  i_opnFLag     int(10) value; // = int
+  i_mode        uns(10) options(*nopass) value; // = uint
+  i_codePage    uns(10) options(*nopass) value; // = uint
+  i_crtCodePage uns(10) options(*nopass) value; // = uint
+end-pr;
+
+//  <sys/stat.h>
+dcl-c S_IRUSR 256; // ! Read For Own
+dcl-c S_IWUSR 128; // ! Write For Ow
+dcl-c S_IXUSR 64; // ! Exc/Srch For
+dcl-c S_IRWXU 448; // ! Rd/Wrt/Exc O
+
+dcl-c S_IRGRP 32; // ! Read For Gro
+dcl-c S_IWGRP 16; // ! Write For Gr
+dcl-c S_IXGRP 8; // ! Exc/Srch For
+dcl-c S_IRWXG 56; // ! Rd/Wrt/Exc G
+
+dcl-c S_IROTH 4; // ! Read For Oth
+dcl-c S_IWOTH 2; // ! Write For Ot
+dcl-c S_IXOTH 1; // ! Exc/Srch For
+dcl-c S_IRWXO 7; // ! Rd/Wrt/Exc O
+
+dcl-c S_ISUID 2048;
+dcl-c S_ISGID 1024;
+dcl-c S_ISVTX 512;
+
+//  <h/fcntl.h>
+dcl-c O_CREAT 8; // ! Append Mode
+dcl-c O_EXCL 16; // ! Exclusive Us
+dcl-c O_TRUNC 64; // ! Truncate Fla
+
+dcl-c O_APPEND 256; // ! Append Mode
+
+dcl-c O_CODEPAGE 8388608; // ! Codepage Fla
+dcl-c O_TEXTDATA 16777216; // ! Text Data Fl
+dcl-c O_FORCE_SCAN 67108864; // ! Force scan
+dcl-c O_INHERITMODE 134217728; // ! Inherit Mode
+dcl-c O_CCSID 32; // ! CCSID
+dcl-c O_TEXT_CREAT 33554432; // !
+
+dcl-c O_SHARE_RDONLY 65536; // ! Shared Read
+dcl-c O_SHARE_WRONLY 131072; // ! Shared Write
+dcl-c O_SHARE_RDWR 262144; // ! Shared Rd/Wr
+dcl-c O_SHARE_NONE 524288; // ! No Share
+
+dcl-c O_RDONLY 1; // ! Read Only
+dcl-c O_WRONLY 2; // ! Write Only
+dcl-c O_RDWR 4; // ! Read/Write
+
+//  value/-1 = read()--Write from Descriptor           include <unistd.h>
+dcl-pr read extproc('read') like(ssize_t); // = ssize_t
+  i_fd      int(10) value; // = int
+  i_pBuffer pointer value; // = *buf
+  i_buflen  like(size_t) value; // = size_t
+end-pr;
+
+//  value/-1 = write()--Write to Descriptor            include <unistd.h>
+dcl-pr write extproc('write') like(ssize_t); // = ssize_t
+  i_fd      int(10) value; // = int
+  i_pBuffer pointer value; // = *buf
+  i_buflen  like(size_t) value; // = size_t
+end-pr;
+
+//  0/-1 = ftruncate()--Truncate File                  include <unistd.h>
+dcl-pr ftruncate int(10) extproc('ftruncate'); // = int
+  i_fd     int(10) value; // = int
+  i_length like(off_t) value; // = off_t
+end-pr;
+
+//  off_t = lseek()--Set File Read/Write Offset        include <unistd.h>
+dcl-pr lseek extproc('lseek') like(off_t); // = off_t
+  i_fd     int(10) value; // = int
+  i_offset like(off_t) value; // = off_t
+  i_whence int(10) value; // = int
+end-pr;
+
+//  <h/unistd.h>
+dcl-c SEEK_SET 0; // ! seek start
+dcl-c SEEK_CUR 1; // ! seek curPos
+dcl-c SEEK_END 2; // ! seek end
+
+//  0/-1 = unlink()--Remove Link to File               include <unistd.h>
+dcl-pr unlink int(10) extproc('unlink'); // = int
+  i_pPath pointer options(*string) value; // = *path
+end-pr;
+
+//  0/-1 = Qp0lRenameKeep()--Rename File or Directory, Keep "new" If It Exists
+dcl-pr Qp0lRenameKeep int(10) extproc('Qp0lRenameKeep'); // = int
+  i_pOldPath pointer options(*string) value; // = *path
+  i_pNewPath pointer options(*string) value; // = *path
+end-pr;
+
+//  0/-1 = Qp0lRenameUnlink()--Rename File or Directory, Unlink "new" If It Exists
+dcl-pr Qp0lRenameUnlink int(10) extproc('Qp0lRenameUnlink'); // = int
+  i_pOldPath pointer options(*string) value; // = *path
+  i_pNewPath pointer options(*string) value; // = *path
+end-pr;
+
+//  0/-1 = close()--Close File or Socket Descriptor    include <unistd.h>
+/if NOT DEFINED(c_close_function)
+/define c_close_function
+dcl-pr close int(10) extproc('close'); // = int
+  i_fd int(10) value; // = int
+end-pr;
+/endif
+
+//  erno--Set Pointer to Runtime Error Code
+dcl-pr errno pointer extproc('__errno');
+end-pr;
+
+//  strerror -- Set Pointer to Runtime Error Message
+dcl-pr strerror pointer extproc('strerror');
+  errno int(10) value;
+end-pr;
+
+//  <sys/errno.h>
+dcl-c EDOM_C 3001; // domain error i
+dcl-c ERANGE_C 3002; // range error in
+dcl-c ETRUNC_C 3003; // truncation on
+dcl-c ENOTOPEN_C 3004; // file has not b
+dcl-c ENOTREAD_C 3005; // file not opene
+dcl-c ERECIO_C 3008; // file opened fo
+dcl-c ENOTWRITE_C 3009; // file not opene
+dcl-c ESTDIN_C 3010; // stdin cannot b
+dcl-c ESTDOUT_C 3011; // stdout cannot
+dcl-c ESTDERR_C 3012; // stderr cannot
+dcl-c EBADSEEK_C 3013; // bad offset to
+dcl-c EBADNAME_C 3014; // invalid file n
+dcl-c EBADMODE_C 3015; // invalid file m
+dcl-c EBADPOS_C 3017; // invalid positi
+dcl-c ENOPOS_C 3018; // no record at s
+dcl-c ENUMMBRS_C 3019; // no ftell if mo
+dcl-c ENUMRECS_C 3020; // no ftell if to
+dcl-c EBADFUNC_C 3022; // invalid functi
+dcl-c ENOREC_C 3026; // record not fou
+dcl-c EBADDATA_C 3028; // message data i
+dcl-c EBADOPT_C 3040; // bad option on
+dcl-c ENOTUPD_C 3041; // file not opene
+dcl-c ENOTDLT_C 3042; // file not opene
+dcl-c EPAD_C 3043; // padding occurr
+dcl-c EBADKEYLN_C 3044; // bad key length
+dcl-c EPUTANDGET_C 3080; // illegal write
+dcl-c EGETANDPUT_C 3081; // illegal read a
+dcl-c EIOERROR_C 3101; // I/O exception
+dcl-c EIORECERR_C 3102; // I/O exception
+
+//  The following values are defined by POSIX ISO/IEC 9945-1:1990.
+dcl-c EINVAL_C 3021; // invalid argume
+dcl-c EIO_C 3006; // input/output e
+dcl-c ENODEV_C 3007; // no such device
+dcl-c EBUSY_C 3029; // resource busy
+dcl-c ENOENT_C 3025; // no such file o
+dcl-c EPERM_C 3027; // operation not
+
+//  AS/400 specific error numbers
+dcl-c EACCES_C 3401; // Permission den
+dcl-c ENOTDIR_C 3403; // Not a director
+dcl-c ENOSPC_C 3404; // No space avail
+dcl-c EXDEV_C 3405; // Improper link.
+dcl-c EWOULDBLOCK_C 3406; // Operation woul
+dcl-c EAGAIN_C 3406; // Operation woul
+dcl-c EINTR_C 3407; // Interrupted fu
+dcl-c EFAULT_C 3408; // The address us
+dcl-c ETIME_C 3409; // Operation time
+dcl-c ENXIO_C 3415; // No such device
+dcl-c ECLOSED_C 3417; // Socket closed
+dcl-c EADDRINUSE_C 3420; // Address alread
+dcl-c EADDRNOTAVAIL_C 3421; // Address not av
+dcl-c EAFNOSUPPORT_C 3422; // The type of so
+dcl-c EALREADY_C 3423; // Operation alre
+dcl-c ECONNABORTED_C 3424; // Connection end
+dcl-c ECONNREFUSED_C 3425; // A remote host
+dcl-c ECONNRESET_C 3426; // A connection w
+dcl-c EDESTADDRREQ_C 3427; // Operation requ
+dcl-c EHOSTDOWN_C 3428; // A remote host
+dcl-c EHOSTUNREACH_C 3429; // A route to the
+dcl-c EINPROGRESS_C 3430; // Operation in p
+dcl-c EISCONN_C 3431; // A connection h
+dcl-c EMSGSIZE_C 3432; // Message size o
+dcl-c ENETDOWN_C 3433; // The network is
+dcl-c ENETRESET_C 3434; // A socket is co
+dcl-c ENETUNREACH_C 3435; // Cannot reach t
+dcl-c ENOBUFS_C 3436; // There is not e
+dcl-c ENOPROTOOPT_C 3437; // The protocol d
+dcl-c ENOTCONN_C 3438; // Requested oper
+dcl-c ENOTSOCK_C 3439; // The specified
+dcl-c ENOTSUP_C 3440; // Operation not
+dcl-c EOPNOTSUPP_C 3440; // Operation not
+dcl-c EPFNOSUPPORT_C 3441; // The socket pro
+dcl-c EPROTONOSUPPORT_C 3442; // No protocol of
+dcl-c EPROTOTYPE_C 3443; // The socket typ
+dcl-c ERCVDERR_C 3444; // An error indic
+dcl-c ESHUTDOWN_C 3445; // Cannot send da
+dcl-c ESOCKTNOSUPPORT_C 3446; // The specified
+dcl-c ETIMEDOUT_C 3447; // A remote host
+dcl-c EUNATCH_C 3448; // The protocol r
+dcl-c EBADF_C 3450; // Descriptor not
+dcl-c EMFILE_C 3452; // Too many open
+dcl-c ENFILE_C 3453; // Too many open
+dcl-c EPIPE_C 3455; // Broken pipe.
+dcl-c EEXIST_C 3457; // File exists.
+dcl-c EDEADLK_C 3459; // Resource deadl
+dcl-c ENOMEM_C 3460; // Storage alloca
+dcl-c EOWNERTERM_C 3462; // The mutex no l
+dcl-c EDESTROYED_C 3463; // he synchroniza
+dcl-c ETERM_C 3464; // Operation term
+dcl-c EMLINK_C 3468; // Maximum link c
+dcl-c ESPIPE_C 3469; // Seek request n
+dcl-c ENOSYS_C 3470; // Function not i
+dcl-c EISDIR_C 3471; // Specified targ
+dcl-c EROFS_C 3472; // Read-only file
+dcl-c EUNKNOWN_C 3474; // Unknown system
+dcl-c EITERBAD_C 3475; // Iterator is in
+dcl-c EDAMAGE_C 3484; // A damaged obje
+dcl-c ELOOP_C 3485; // A loop exists
+dcl-c ENAMETOOLONG_C 3486; // A path name is
+dcl-c ENOLCK_C 3487; // No locks avail
+dcl-c ENOTEMPTY_C 3488; // Directory not
+dcl-c ENOSYSRSC_C 3489; // System resourc
+dcl-c ECONVERT_C 3490; // Conversion err
+dcl-c E2BIG_C 3491; // Argument list
+dcl-c EILSEQ_C 3492; // Conversion sto
+dcl-c ESOFTDAMAGE_C 3497; // Object has sof
+dcl-c ENOTENROLL_C 3498; // User not enrol
+dcl-c EOFFLINE_C 3499; // Object is susp
+dcl-c EROOBJ_C 3500; // Object is a re
+dcl-c ELOCKED_C 3506; // Area being rea
+dcl-c EFBIG_C 3507; // Object too lar
+dcl-c EIDRM_C 3509; // The semaphore,
+dcl-c ENOMSG_C 3510; // The queue does
+dcl-c EFILECVT_C 3511; // File ID conver
+dcl-c EBADFID_C 3512; // A File ID coul
+dcl-c ESTALE_C 3513; // A File ID coul
+dcl-c ESRCH_C 3515; // No such proces
+dcl-c ENOTSIGINIT_C 3516; // Process not en
+dcl-c ECHILD_C 3517; // No child proce
+dcl-c EBADH_C 3520; // Handle is not
+dcl-c ETOOMANYREFS_C 3523; // The operation
+dcl-c ENOTSAFE_C 3524; // Function not a
+dcl-c EOVERFLOW_C 3525; // Object is too
+dcl-c EJRNDAMAGE_C 3526; // Journal damage
+dcl-c EJRNINACTIVE_C 3527; // Journal inacti
+dcl-c EJRNRCVSPC_C 3528; // Journal space
+dcl-c EJRNRMT_C 3529; // Journal is rem
+dcl-c ENEWJRNRCV_C 3530; // New journal re
+dcl-c ENEWJRN_C 3531; // New journal is
+dcl-c EJOURNALED_C 3532; // Object already
+dcl-c EJRNENTTOOLONG_C 3533; // Entry too larg
+dcl-c EDATALINK_C 3534; // Object is a Da
+dcl-c ENOTAVAIL_C 3535; // Independent AS
+dcl-c ENOTTY_C 3536; // Inappropriate
+dcl-c EFBIG2_C 3540; // Write or trunc
+dcl-c ETXTBSY_C 3543; // Text file busy
+dcl-c EASPGRPNOTSET_C 3544; // ASP group not
+dcl-c ERESTART_C 3545; // System call ca
+dcl-c ESCANFAILURE_C 3546; // Object marked
+
+//  Unix return codes
+dcl-c RC_OK 0;
+dcl-c RC_ERROR -1;
+
+//  Convert External Form to Numeric Value (CVTEFN)
+dcl-pr cvtefnd float(8) extproc('cvtefnd');
+  i_source pointer value;
+  i_len    uns(10) value;
+  i_mask   pointer value;
+end-pr;
+
+//  Test Bit in String (TSTBTS)
+dcl-pr tstbts int(10) extproc('tstbts');
+  bit_string pointer value;
+  bit_offset int(10) value;
+end-pr;
+
+//  getenv()--Get Value of Environment Variable
+dcl-pr getenv pointer extproc('getenv');
+  name pointer options(*string) value;
+end-pr;
+
+//  putenv()--Change or Add Environment Variable
+dcl-pr putenv int(10) extproc('putenv');
+  string pointer options(*string) value;
+end-pr;
+
+//  Qp0zDltEnv()--Delete an Environment Variable
+dcl-pr Qp0zDltEnv int(10) extproc('Qp0zDltEnv');
+  name pointer options(*string) value;
+end-pr;
+
+//  Qp0zInitEnv()--Initialize Environment for Variables
+dcl-pr Qp0zInitEnv int(10) extproc('Qp0zInitEnv');
+end-pr;
+
+dcl-s ENVIRON pointer import('environ');
+
+//  Generate Universal Unique Identifier (GENUUID)
+dcl-pr genUUID extproc('_GENUUID');
+  uuid_template pointer value;
+end-pr;
+
+dcl-ds uuid_template_t qualified based(pDummy);
+  bytPrv   uns(10);
+  bytAvl   uns(10);
+  reserved char(8);
+  uuid     char(16);
+end-ds;
+
+//  Convert Hex to Character (CVTHC)
+dcl-pr cvthc extproc('cvthc');
+  pResult    pointer value;
+  pSource    pointer value;
+  sourceSize int(10) value;
+end-pr;
+
+//  Convert Eight Bit Character to Hex Nibbles (CVTCH)
+dcl-pr cvtch extproc('cvtch');
+  pResult   pointer value;
+  pSource   pointer value;
+  sourceLen int(10) value;
+end-pr;
+
+//  Cipher (CIPHER)
+dcl-pr cipher extproc('_CIPHER');
+  *n pointer const;
+  *n pointer value;
+  *n pointer const;
+end-pr;
+
+dcl-ds cipherCtrls_t qualified based(pDummy) align;
+  function      char(2) pos(1);
+  hashAlg       char(1) pos(3);
+  sequence      char(1) pos(4);
+  dataLength    uns(10) pos(5);
+  output        char(1) pos(9);
+  reserved_1    char(7) pos(10);
+  hashContext   pointer pos(17);
+  HMACKey       pointer pos(33);
+  HMACKeyLength uns(10) pos(49);
+  reserved_2    char(44) pos(53);
+end-ds;
+
+dcl-c cCIPHER_MD5 x'00';
+dcl-c cCIPHER_SHA1 x'01';
+
+dcl-c cCIPHER_ONLY x'00';
+dcl-c cCIPHER_FIRST x'01';
+dcl-c cCIPHER_MIDDLE x'02';
+dcl-c cCIPHER_FINAL x'03';
+
+dcl-c cCIPHER_HASH x'00';
+dcl-c cCIPHER_HMAC x'01';
+
+/endif
+]]>  </copysrc>
+</mbr>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*STATUS   "><![CDATA[
+Installing COPYRIGHT  type CLLE - in progress.
+]]>  </sendmsg>
+<!-- START OF MEMBER  -->
+<mbr
+mbrname =  "COPYRIGHT "
+mbrtype =  "CLLE      "
+mbrtext =  "Copyright information                             "
+srcfile =  "QRTVMBRL  "
+srclib  =  "selected  "
+srclen  =  "00112"
+srccssid=  "01141">
+<copysrc><![CDATA[
+**free
+/if not defined(COPYRIGHT_DSPEC)
+ctl-opt copyright('V1.5 - 06.06.2026 - mailto: thomas.raddatz@tools400.de');
+/eof
+/endif
+dcl-c RTVMBRL_VERSION '1.5';
+dcl-c RTVMBRL_DATE '06.06.2026';
+]]>  </copysrc>
+</mbr>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*STATUS   "><![CDATA[
+Installing GENLSTHDR  type RPGLE - in progress.
+]]>  </sendmsg>
+<!-- START OF MEMBER  -->
+<mbr
+mbrname =  "GENLSTHDR "
+mbrtype =  "RPGLE     "
+mbrtext =  "List API generic list header                      "
+srcfile =  "QRTVMBRL  "
+srclib  =  "selected  "
+srclen  =  "00112"
+srccssid=  "01141">
+<copysrc><![CDATA[
+**free
+/if NOT defined(genLstHdr_t)
+/define genLstHdr_t
+// ============================================================= *
+//   List API generic list header                                *
+//===============================================================*
+
+dcl-ds genLstHdr_t qualified based(pDummy);
+  userArea      char(64);
+  size          int(10);
+  release       char(4);
+  format        char(8);
+  API           char(10);
+  crtDate       char(13);
+  infStat       char(1);
+  sizeUsrSpc    int(10);
+  ofsInpSct     int(10);
+  sizeInpSct    int(10);
+  ofsHdrSct     int(10);
+  sizeHdrSct    int(10);
+  ofsLstSct     int(10);
+  sizeLstSct    int(10);
+  numE          int(10);
+  sizeE         int(10);
+  CCSID         int(10);
+  cntryID       char(2);
+  lngID         char(3);
+  subLstInd     char(1);
+  reserved_01   char(42);
+  //  Additional Format 0300 Fields
+  APIEntryPoint char(256);
+  reserved_02   char(128);
+end-ds;
+
+/endif
+]]>  </copysrc>
+</mbr>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*STATUS   "><![CDATA[
+Installing PRTVMBRL  type RPGLE - in progress.
+]]>  </sendmsg>
+<!-- START OF MEMBER  -->
+<mbr
+mbrname =  "PRTVMBRL  "
+mbrtype =  "RPGLE     "
+mbrtext =  "Retrieve Member List API - Public Interface       "
+srcfile =  "QRTVMBRL  "
+srclib  =  "selected  "
+srclen  =  "00112"
+srccssid=  "01141">
+<copysrc><![CDATA[
+**free
+//===============================================================*
+//                                                               *
+//  (c) 2000, Thomas Raddatz                                     *
+//                                                               *
+//  Bereich  : RTVMBRL                                           *
+//  Exp.Liste: RTVMBRL_P                                         *
+//  Typ      : RPGLE                                             *
+//                                                               *
+//  erstellt : 24.05.2000                                        *
+//                                                               *
+//===============================================================*
+//                                                               *
+//  Kurzdokumentation :                                          *
+//                                                               *
+//  Prototypen für Serviceprogramm RTVMBRL                       *
+//                                                               *
+//===============================================================*
+
+//===============================================================*
+//  Reference fields
+//===============================================================*
+dcl-s mbrLst_handle_t pointer based(pDummy);
+
+//===============================================================*
+//  Open List Of Database File Members
+//===============================================================*
+
+dcl-pr f_opnMbrLst ind opdesc extproc('RTVMBRLR1_f_opnMbrLst');
+  i_fileName char(10) value;
+  i_fileLib  char(10) value;
+  i_mbr      char(10) value;
+  i_orderBy  char(10) value;
+  o_handle   like(mbrLst_handle_t);
+  o_msg      char(32767) options(*nopass: *varsize);
+end-pr;
+
+//===============================================================*
+//  Close List Of Database File Members
+//===============================================================*
+
+dcl-pr f_cloMbrLst ind extproc('RTVMBRLR1_f_cloMbrLst');
+  io_handle like(mbrLst_handle_t);
+end-pr;
+
+//===============================================================*
+//  Get First Member
+//===============================================================*
+
+dcl-pr f_getFirstMbr ind opdesc extproc('RTVMBRLR1_f_getFirstMbr');
+  i_handle like(mbrLst_handle_t) value;
+  o_data   char(32767) options(*varsize);
+end-pr;
+
+//===============================================================*
+//  Get Next Member
+//===============================================================*
+
+dcl-pr f_getNextMbr ind opdesc extproc('RTVMBRLR1_f_getNextMbr');
+  i_handle like(mbrLst_handle_t) value;
+  o_data   char(32767) options(*varsize);
+end-pr;
+
+//===============================================================*
+//  Get Number of Members available
+//===============================================================*
+
+dcl-pr f_getNumMbrAvl int(10) extproc('RTVMBRLR1_f_getNumMbrAvl');
+  i_handle like(mbrLst_handle_t) value;
+end-pr;
+
+]]>  </copysrc>
+</mbr>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*STATUS   "><![CDATA[
+Installing QUSLMBR  type RPGLE - in progress.
+]]>  </sendmsg>
+<!-- START OF MEMBER  -->
+<mbr
+mbrname =  "QUSLMBR   "
+mbrtype =  "RPGLE     "
+mbrtext =  "List Database File Members (QUSLMBR) API          "
+srcfile =  "QRTVMBRL  "
+srclib  =  "selected  "
+srclen  =  "00112"
+srccssid=  "01141">
+<copysrc><![CDATA[
+**free
+/if NOT defined(QUSLMBR)
+/define QUSLMBR
+
+//  List Database File Members (QUSLMBR) API
+dcl-pr QUSLMBR extpgm('QUSLMBR');
+  i_qUsrSpc  char(20) const;
+  i_format   char(8) const;
+  i_qFile    char(20) const;
+  i_mbr      char(10) const;
+  i_ovrPrc   char(1) const;
+  io_errCode char(65535) options(*nopass: *varsize);
+end-pr;
+
+//  Input Parameter Section
+dcl-ds QUSLMBR_inpParm_t qualified based(pDummy);
+  qUsrSpc likeds(qObj_t);
+  format  char(8);
+  qFile   likeds(qObj_t);
+  mbr     char(10);
+  ovrOrc  char(1);
+end-ds;
+
+//  Header Section
+dcl-ds QUSLMBR_header_t qualified based(pDummy);
+  qFileUsed  likeds(qObj_t);
+  fileAttr   char(10);
+  text       char(50);
+  numMbr     int(10);
+  isSrcFile  ind;
+  reserved_1 char(3);
+  textCcsid  uns(10);
+end-ds;
+
+//  MBRL0100 List Data Section
+dcl-ds mbrl0100_t qualified based(pDummy);
+  mbr char(10);
+end-ds;
+
+//  MBRL0200 List Data Section
+dcl-ds mbrl0200_t qualified based(pDummy);
+  mbr       char(10);
+  srcType   char(10);
+  crtDatTim char(13);
+  chgDatTim char(13);
+  text      char(50);
+  textCcsid uns(10);
+end-ds;
+
+/endif
+]]>  </copysrc>
+</mbr>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*STATUS   "><![CDATA[
+Installing RTVMBRL  type BND - in progress.
+]]>  </sendmsg>
+<!-- START OF MEMBER  -->
+<mbr
+mbrname =  "RTVMBRL   "
+mbrtype =  "BND       "
+mbrtext =  "Retrieve Member List API                          "
+srcfile =  "QRTVMBRL  "
+srclib  =  "selected  "
+srclen  =  "00112"
+srccssid=  "01141">
+<copysrc><![CDATA[
+     /* ====================================================================== */
+     /* >>PRE-COMPILER<<                                                       */
+     /*                                                                        */
+     /*   >>CRTCMD<< CRTSRVPGM    SRVPGM(&LI/&OB);                             */
+     /*                                                                        */
+     /*   >>COMPILE<<                                                          */
+     /*     >>PARM<< MODULE(&LI/RTVMBRLR1 +                                    */
+     /*                                );                                      */
+     /*     >>PARM<< EXPORT(*SRCFILE);                                         */
+     /*     >>PARM<<   SRCFILE(&SL/&SF);                                       */
+     /*     >>PARM<<   SRCMBR(&SM);                                            */
+     /*     >>PARM<< ACTGRP(*CALLER);                                          */
+     /*     >>PARM<< BNDSRVPGM(*LIBL/BASICS1);                                 */
+     /*     >>PARM<< ALWUPD(*YES);                                             */
+     /*     >>PARM<< ALWLIBUPD(*YES);                                          */
+     /*     >>PARM<< BNDDIR(QC2LE);                                            */
+     /*     >>PARM<< TEXT('Tools/400: Retrieve Member List');                  */
+     /*     >>PARM<< TGTRLS(V6R1M0);                                           */
+     /*     >>PARM<< DETAIL(*BASIC);                                           */
+     /*   >>END-COMPILE<<                                                      */
+     /*                                                                        */
+     /*   >>LINK<<                                                             */
+     /*   >>END-LINK<<                                                         */
+     /*                                                                        */
+     /*   >>EXECUTE<<                                                          */
+     /*                                                                        */
+     /* >>END-PRE-COMPILER<<                                                   */
+     /* ====================================================================== */
+
+STRPGMEXP PGMLVL(*CURRENT) SIGNATURE('Version 1.4')
+
+  EXPORT SYMBOL('RTVMBRLR1_f_cloMbrLst')
+  EXPORT SYMBOL('RTVMBRLR1_f_getFirstMbr')
+  EXPORT SYMBOL('RTVMBRLR1_f_getNextMbr')
+  EXPORT SYMBOL('RTVMBRLR1_f_getNumMbrAvl')
+  EXPORT SYMBOL('RTVMBRLR1_f_opnMbrLst')
+
+ENDPGMEXP
+
+STRPGMEXP PGMLVL(*PRV    ) SIGNATURE(x'B9848C2D3BC87FEB143BDA8CB11A8F48')
+
+  EXPORT SYMBOL('RTVMBRLR1_f_cloMbrLst')
+  EXPORT SYMBOL('RTVMBRLR1_f_getFirstMbr')
+  EXPORT SYMBOL('RTVMBRLR1_f_getNextMbr')
+  EXPORT SYMBOL('RTVMBRLR1_f_getNumMbrAvl')
+  EXPORT SYMBOL('RTVMBRLR1_f_opnMbrLst')
+
+ENDPGMEXP
+]]>  </copysrc>
+</mbr>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*STATUS   "><![CDATA[
+Installing RTVMBRL_T  type RPGLE - in progress.
+]]>  </sendmsg>
+<!-- START OF MEMBER  -->
+<mbr
+mbrname =  "RTVMBRL_T "
+mbrtype =  "RPGLE     "
+mbrtext =  "Retrieve Member List API - Example 1              "
+srcfile =  "QRTVMBRL  "
+srclib  =  "selected  "
+srclen  =  "00112"
+srccssid=  "01141">
+<copysrc><![CDATA[
+**free
+//=====================================================================*
+//  Author  :  Thomas Raddatz                                          *
+//  Date    :  24.05.2000                                              *
+//  E-mail  :  thomas.raddatz@tools400.de                              *
+//  Homepage:  www.tools400.de                                         *
+//=====================================================================*
+//                                                                     *
+//  This software is free software, you can redistribute it and/or     *
+//  modify it under the terms of the GNU General Public License (GPL)  *
+//  as published by the Free Software Foundation.                      *
+//                                                                     *
+//  See GNU General Public License for details.                        *
+//          http://www.opensource.org                                  *
+//          http://www.opensource.org/licenses/gpl-license.html        *
+//                                                                     *
+//=====================================================================*
+//  History:                                                           *
+//                                                                     *
+//  Datum       Name          Änderung                                 *
+//  ----------  ------------  ---------------------------------------  *
+//  26.09.2002  Th.Raddatz    Added reference field msg_t.             *
+//                                                                     *
+//  26.09.2002  Th.Raddatz    Added msg parameter to the f_opnMbrLst() *
+//                            procedure call to get error message      *
+//                            back to caller.                          *
+//                                                                     *
+//  17.12.2008  Th.Raddatz    Changed program to work with RTVMBRL 1.4.*
+//                                                                     *
+//=====================================================================*
+//   >>PRE-COMPILER<<                                                  *
+//                                                                     *
+//     >>CRTCMD<<  CRTRPGMOD    MODULE(&LI/&OB) +                      *
+//                              SRCFILE(&SL/&SF) +                     *
+//                              SRCMBR(&SM);                           *
+//                                                                     *
+//     >>COMPILE<<                                                     *
+//       >>PARM<< TRUNCNBR(*NO);                                       *
+//       >>PARM<< DBGVIEW(*LIST);                                      *
+//     >>END-COMPILE<<                                                 *
+//                                                                     *
+//     >>EXECUTE<<                                                     *
+//                                                                     *
+//     >>CMD<<     CRTPGM       PGM(&LI/&OB) +                         *
+//                              MODULE(*PGM) +                         *
+//                              BNDSRVPGM(&LI/RTVMBRL) +               *
+//                              ACTGRP(*NEW) +                         *
+//                              DETAIL(*BASIC);                        *
+//                                                                     *
+//   >>END-PRE-COMPILER<<                                              *
+//=====================================================================*
+ctl-opt extbinint(*yes);
+ctl-opt datfmt(*iso) timfmt(*iso) debug(*yes);
+//=====================================================================*
+
+/copy QBASICS1,PBASICS1 Tools/400 Runtime Library
+/copy QRTVMBRL,PRTVMBRL Retrieve Member List Service Program
+/copy QRTVMBRL,QUSLMBR List Database File members(QUSLMBR) API
+
+//  *ENTRY Parameterliste
+dcl-pr RTVKEYL_T extpgm('RTVKEYL_T');
+  gi_file_1 char(10) const;
+  gi_file_2 char(10) const;
+end-pr;
+
+//  Prototypen für interne Funktionen
+dcl-pr p_main;
+  i_file_1 char(10) const;
+  i_file_2 char(10) const;
+end-pr;
+
+//*******************************************************************
+//  Hauptsteuerleiste des RPG
+//*******************************************************************
+dcl-pi RTVKEYL_T;
+  gi_file_1 char(10) const;
+  gi_file_2 char(10) const;
+end-pi;
+
+p_main(gi_file_1: gi_file_2);
+
+*inlr = *on;
+
+//==================================================================*
+//  Main Prozedur
+//  (so hat man auch in der "Hauptsteuerleiste" lokale Variablen)
+//==================================================================*
+
+dcl-proc p_main export;
+  dcl-pi *n;
+    i_file_1 char(10) const;
+    i_file_2 char(10) const;
+  end-pi;
+
+//  Lokale Arbeitsfelder
+  dcl-s isDone1 ind inz;
+  dcl-s isDone2 ind inz;
+
+  dcl-s handle1 like(mbrLst_handle_t) inz;
+  dcl-s handle2 like(mbrLst_handle_t) inz;
+
+  dcl-s data like(data_1) inz;
+
+  dcl-ds data_1 likeds(mbrl0200_t) inz;
+  dcl-ds data_2 likeds(mbrl0200_t) inz;
+
+  dcl-ds screen_msg;
+    blank1 char(3) inz;
+    col1   char(10) inz;
+    blank2 char(4) inz;
+    col2   char(10) inz;
+  end-ds;
+
+  dcl-s ok char(1) inz;
+  dcl-s msg like(msg_t) inz;
+
+//-------------------------------------------------------------------
+
+//  Ausgeben Überschrift
+Clear screen_msg;
+Dsply screen_msg;
+Clear screen_msg;
+col1 = 'n. Name:';
+col2 = 'n. Datum:';
+Dsply screen_msg;
+Clear screen_msg;
+col1 = *ALL'-';
+col2 = *ALL'-';
+Dsply screen_msg;
+
+//  Öffnen der 1. Liste
+isDone1 = f_opnMbrLst(i_file_1    :
+                     '*LIBL'     :
+                     '*ALL'      :
+                     '*NAME'     :
+                     handle1     :
+                     msg         );
+
+//  Öffnen der 2. Liste
+isDone2 = f_opnMbrLst(i_file_2    :
+                     '*LIBL'     :
+                     '*ALL'      :
+                     '*CRTDATE'  :
+                     handle2     :
+                     msg         );
+
+//  Lesen 1. Eintrag der 1. Liste
+isDone1 = f_getFirstMbr(handle1 :
+                       data    );
+If isDone1;
+   data_1  = data;
+Else;
+   Clear data_1;
+Endif;
+
+//  Lesen 1. Eintrag der 2. Liste
+isDone2 = f_getFirstMbr(handle2 :
+                       data    );
+If isDone2;
+   data_2  = data;
+Else;
+   Clear data_2;
+Endif;
+
+
+Dow isDOne1 or isDone2;
+
+   //  Anzeigen gelesene Einträge
+   Reset screen_msg;
+   col1 = data_1.mbr;
+   col2 = data_2.mbr;
+   Dsply screen_msg;
+
+   //  Lesen weitere Einträge Liste 1
+   isDone1 = f_getNextMbr(handle1  :
+                        data      );
+   If isDone1;
+      data_1  = data;
+   Else;
+      Clear data_1;
+   Endif;
+
+   //  Lesen weitere Einträge Liste 2
+   isDone2 = f_getNextMbr(handle2  :
+                        data      );
+   If isDone2;
+      data_2  = data;
+   Else;
+      Clear data_2;
+   Endif;
+Enddo;
+
+//  Anzeigen "Ende" Nachricht
+Clear screen_msg;
+col1 =
+  %trim(%editc(f_getNumMbrAvl(handle1):'Z'));
+col2 =
+  %trim(%editc(f_getNumMbrAvl(handle2):'Z'));
+Dsply screen_msg ok;
+
+//  Schließen 1. Liste
+isDone1 = f_cloMbrLst(handle1    );
+
+//  Schließen 2. Liste
+isDone2 = f_cloMbrLst(handle2    );
+
+Return;
+
+end-proc;
+
+//==================================================================*
+
+]]>  </copysrc>
+</mbr>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*STATUS   "><![CDATA[
+Installing RTVMBRLR1  type RPGLE - in progress.
+]]>  </sendmsg>
+<!-- START OF MEMBER  -->
+<mbr
+mbrname =  "RTVMBRLR1 "
+mbrtype =  "RPGLE     "
+mbrtext =  "Retrieve Member List API                          "
+srcfile =  "QRTVMBRL  "
+srclib  =  "selected  "
+srclen  =  "00112"
+srccssid=  "01141">
+<copysrc><![CDATA[
+**free
+//=====================================================================*
+//  Author  :  Thomas Raddatz                                          *
+//  Date    :  24.05.2000                                              *
+//  E-mail  :  Thomas.Raddatz@Tools400.de                              *
+//  Homepage:  www.tools400.de                                         *
+//=====================================================================*
+//                                                                     *
+//  This software is free software, you can redistribute it and/or     *
+//  modify it under the terms of the GNU General Public License (GPL)  *
+//  as published by the Free Software Foundation.                      *
+//                                                                     *
+//  See GNU General Public License for details.                        *
+//          http://www.opensource.org                                  *
+//          http://www.opensource.org/licenses/gpl-license.html        *
+//                                                                     *
+//=====================================================================*
+//  History:                                                           *
+//                                                                     *
+//  Datum       Name          Änderung                                 *
+//  ----------  ------------  ---------------------------------------  *
+//  06.06.2002  Th.Raddatz    Fixed problem that CEEGSI changed        *
+//                            foreign storage becauce of a wrong       *
+//                            prototype. (Forgotten FC parameter.)     *
+//                                                                     *
+//  26.09.2002  Th.Raddatz    Added DEFINE statements to the           *
+//                            reference fields to prevent compiler     *
+//                            error message RNF3316                    *
+//                                                                     *
+//  26.09.2002  Th.Raddatz    Changed how the API error message is     *
+//                            is assigned to o_msg in routine          *
+//                            f_opnMbrLst() to ensure proper value.    *
+//                                                                     *
+//  03.06.2003  Th.Raddatz    Changed service program to use a pointer *
+//                            instead of a data structure as the       *
+//                            handle.                                  *
+//                            Added reference field for handle.        *
+//                                                                     *
+//  30.06.2003  Th.Raddatz    Changed definition of errCode parameter  *
+//                            to use reference field.                  *
+//                                                                     *
+//  17.12.2008  Th.Raddatz    Changed program to /FREE and to use      *
+//                            BASICS1. Removed external data structures*
+//                            from distribution.                       *
+//                                                                     *
+//=====================================================================*
+//   >>PRE-COMPILER<<                                                  *
+//                                                                     *
+//     >>CRTCMD<<  CRTRPGMOD    MODULE(&LI/&OB) +                      *
+//                              SRCFILE(&SL/&SF) +                     *
+//                              SRCMBR(&SM);                           *
+//                                                                     *
+//     >>COMPILE<<                                                     *
+//       >>PARM<< TRUNCNBR(*NO);                                       *
+//       >>PARM<< DBGVIEW(*LIST);                                      *
+//       >>PARM<< TGTRLS(V6R1M0);                                      *
+//       >>PARM<< OPTION(*EVENTF);                                     *
+//     >>END-COMPILE<<                                                 *
+//                                                                     *
+//     >>EXECUTE<<                                                     *
+//                                                                     *
+//   >>END-PRE-COMPILER<<                                              *
+//=====================================================================*
+ctl-opt nomain;
+ctl-opt extbinint(*yes) bnddir('QC2LE');
+ctl-opt datfmt(*iso) timfmt(*iso) debug(*yes);
+/copy QRTVMBRL,COPYRIGHT
+//=====================================================================*
+
+//  Exported procedures
+/copy QRTVMBRL,PRTVMBRL
+
+//  Imported procedures
+/copy QBASICS1,PBASICS1 Tools/400 Runtime Library
+/copy QRTVMBRL,QUSLMBR List Database File members(QUSLMBR) API
+/copy QRTVMBRL,CLIB Prototypes for C-Library
+/copy QRTVMBRL,CEELIB Prototypes for CEE APIs
+/copy QRTVMBRL,GENLSTHDR Generic List Header for List APIs
+
+//  Type definitions
+dcl-ds handle_t qualified based(pDummy);
+  pUsrSpc  pointer;
+  numE     int(10);
+  reserved char(36);
+end-ds;
+
+//  Prototypen für interne Funktionen
+dcl-pr f_getEntry ind;
+  i_handle like(mbrLst_handle_t) value;
+  o_data   char(32767) options(*varsize);
+  i_length int(10) value;
+end-pr;
+
+dcl-pr f_mblSort ind;
+  i_pUsrSpc pointer value;
+  i_orderBy char(10) value;
+  o_msg     likeds(msg_t);
+end-pr;
+
+dcl-pr f_mblSortByName int(10);
+  i_pKey     pointer value;
+  i_pElement pointer value;
+end-pr;
+
+dcl-pr f_mblSortByCrtDate int(10);
+  i_pKey     pointer value;
+  i_pElement pointer value;
+end-pr;
+
+dcl-pr cvtApiTmstmp timestamp;
+  i_apiTmstmp char(13) value;
+end-pr;
+
+//==================================================================*
+//  Open Member List
+// -----------------------------------------------------------------
+//  Using format:  MBRL0200
+//==================================================================*
+dcl-proc f_opnMbrLst export;
+  dcl-pi *n ind opdesc;
+    i_fileName char(10) value;
+    i_fileLib  char(10) value;
+    i_mbr      char(10) value;
+    i_orderBy  char(10) value;
+    o_handle   like(mbrLst_handle_t);
+    o_msg      char(32767) options(*nopass: *varsize);
+  end-pi;
+
+//  Return value
+  dcl-s o_isDone ind inz(cFalse);
+
+//  Parameter positions
+  dcl-c p_msg 6;
+
+//  Fields for optional parameters
+  dcl-ds msg likeds(msg_t) inz;
+
+//  Helper fields
+  dcl-s isUsrSpc ind inz;
+  dcl-s pUsrSpc pointer inz;
+  dcl-ds qUsrSpc likeds(qObj_t) inz;
+  dcl-ds qFile likeds(qObj_t) inz;
+  dcl-ds errCode likeds(errCode_t) inz;
+  dcl-ds strInfMsg likeds(strInf_t) inz;
+
+//  Handle
+  dcl-ds handle likeds(handle_t) based(pHandle);
+//-------------------------------------------------------------------
+
+dou '1';
+
+   // Produce temporary object name
+   qUsrSpc = f_getTmpName();
+   if (qUsrSpc.name = '');
+      msg = f_newMsg('CPF9898'
+                     : 'Temporary object name +
+                        could not be produced.'
+                     : cMsg_Escape
+                     : 'QCPFMSG'
+                     : '*LIBL');
+      leave;
+   endif;
+
+   // Create user space
+   if (not f_crtUsrSpc(qUsrSpc.name
+                       : qUsrSpc.lib
+                       : 'List Database File Members, MBRL0200, ' +
+                          i_orderBy
+                       : 65536
+                       : 'TEMP'
+                       : '*USE'
+                       : msg));
+      leave;
+   endif;
+
+   isUsrSpc = cTrue;
+
+   // Retrieve member list
+   qFile.name = i_fileName;
+   qFile.lib  = i_fileLib;
+   errCode = f_newApiErrCode(cTrue);
+   QUSLMBR(qUsrSpc: 'MBRL0200': qFile: i_mbr: '0': errCode);
+
+   if (f_isApiError(errCode));
+      msg = f_cvtApiErrCodeToMsg(errCode);
+      leave;
+   endif;
+
+   // Retrieve user space pointer
+   pUsrSpc = f_rtvUsrSpcPtr(qUsrSpc.name: qUsrSpc.lib: msg);
+   if (msg.ID <> cMSG_ID_OK);
+      leave;
+   endif;
+
+   // Sort member list in user space
+   if (not f_mblSort(pUsrSpc: i_orderBy: msg));
+      leave;
+   endif;
+
+   // Produce handle
+   pHandle = %alloc(%size(handle_t));
+   clear handle;
+   handle.pUsrSpc   = pUsrSpc;
+   handle.numE      = 0;
+   handle.reserved  = *ALLx'00';
+
+   o_handle = pHandle;
+   o_isDone = cTrue;
+enddo;
+
+if (not o_isDone and isUsrSpc);
+   f_dltUsrSpc(qUsrSpc.name: qUsrSpc.lib);
+   isUsrSpc = cFalse;
+endif;
+
+// Return message to caller
+if (%parms() >= p_msg);
+   CEEGSI(p_msg: strInfMsg.dataType
+               : strInfMsg.curlen
+               : strInfMsg.maxlen: *omit);
+   %subst(o_msg: 1: strInfMsg.curlen) = msg;
+endif;
+
+return o_isDone;
+
+
+end-proc;
+
+//==================================================================*
+//  Close Member List
+//==================================================================*
+dcl-proc f_cloMbrLst export;
+  dcl-pi *n ind;
+    io_handle like(mbrLst_handle_t);
+  end-pi;
+
+//  Return value
+  dcl-s o_isDone ind inz(cFalse);
+
+//  Handle
+  dcl-ds handle likeds(handle_t) based(io_handle);
+
+//  Generic List Header for List APIs
+  dcl-ds genLstHdr likeds(genLstHdr_t) based(pGenLstHdr);
+
+//  Input Parameter Section of QUSLMBR API
+  dcl-ds inpSct likeds(QUSLMBR_inpParm_t) based(pInpSct);
+//-------------------------------------------------------------------
+
+// Get user space name
+pGenLstHdr = handle.pUsrSpc;
+pInpSct    = handle.pUsrSpc + genLstHdr.ofsInpSct;
+
+// Delete user space
+o_isDone = f_dltUsrSpc(inpSct.qUsrSpc.name: inpSct.qUsrSpc.lib);
+
+// Clear handle data
+handle = *ALLx'00';
+
+// Free handle memory
+dealloc(N) io_handle;
+
+return o_isDone;
+
+
+end-proc;
+
+//==================================================================*
+//  Get First Member
+//==================================================================*
+dcl-proc f_getFirstMbr export;
+  dcl-pi *n ind opdesc;
+    i_handle like(mbrLst_handle_t) value;
+    o_data   char(32767) options(*varsize);
+  end-pi;
+
+//  Return value
+  dcl-s o_isDone ind inz(cFalse);
+
+//  Parameter positions
+  dcl-c p_data 2;
+
+//  Handle
+  dcl-ds handle likeds(handle_t) based(i_handle);
+
+//  Helper fields
+  dcl-ds strInfData likeds(strInf_t) inz;
+//-------------------------------------------------------------------
+
+// Get length of o_data
+CEEGSI(p_data: strInfData.datatype
+             : strInfData.curlen
+             : strInfData.maxlen
+             : *omit);
+
+// Get first entry
+handle.numE = 0;
+
+// Retrieve entry data
+o_isDone = f_getEntry(i_handle: o_data: strInfData.curlen);
+
+return o_isDone;
+
+
+end-proc;
+
+//==================================================================*
+//  Get Next Member
+//==================================================================*
+
+dcl-proc f_getNextMbr export;
+  dcl-pi *n ind opdesc;
+    i_handle like(mbrLst_handle_t) value;
+    o_data   char(32767) options(*varsize);
+  end-pi;
+
+//  Return value
+  dcl-s o_isDone ind inz(cFalse);
+
+//  Parameter positions
+  dcl-c p_data 2;
+
+//  Helper fields
+  dcl-ds strInfData likeds(strInf_t) inz;
+//-------------------------------------------------------------------
+
+// Get length of o_data
+CEEGSI(p_data: strInfData.datatype
+             : strInfData.curlen
+             : strInfData.maxlen
+             : *omit);
+
+// Retrieve entry data
+o_isDone = f_getEntry(i_handle: o_data: strInfData.curlen);
+
+return o_isDone;
+
+
+end-proc;
+
+//==================================================================*
+//  Get Number of Members available
+//==================================================================*
+
+dcl-proc f_getNumMbrAvl export;
+  dcl-pi *n int(10);
+    i_handle like(mbrLst_handle_t) value;
+  end-pi;
+
+//  Handle
+  dcl-ds handle likeds(handle_t) based(i_handle);
+
+//  Generic List Header for List APIs
+  dcl-ds genLstHdr likeds(genLstHdr_t) based(handle.pUsrSpc);
+//-------------------------------------------------------------------
+
+return genLstHdr.numE;
+
+
+end-proc;
+
+//==================================================================*
+//  *** private ***
+//  Get Entry
+//==================================================================*
+dcl-proc f_getEntry;
+  dcl-pi *n ind;
+    i_handle like(mbrLst_handle_t) value;
+    o_data   char(32767) options(*varsize);
+    i_length int(10) value;
+  end-pi;
+
+//  Deklarieren Funktionswert
+  dcl-s o_isDone ind inz(cFalse);
+
+//  Handle
+  dcl-ds handle likeds(handle_t) based(i_handle);
+
+//  Deklarieren Feld für Eintragsdaten
+  dcl-s pDest pointer inz;
+  dcl-s pSrc pointer inz;
+  dcl-s count int(10) inz;
+
+//  Generic List Header for List APIs
+  dcl-ds genLstHdr likeds(genLstHdr_t) based(handle.pUsrSpc);
+//-------------------------------------------------------------------
+
+// Return to caller if there are no entries left
+if (handle.numE >= genLstHdr.numE);
+   o_isDone = cFalse;
+   return o_isDone;
+endif;
+
+// Copy entry to o_data
+pDest = %addr(o_data);
+pSrc  = handle.pUsrSpc + genLstHdr.ofsLstSct   +
+                         (handle.numE * genLstHdr.sizeE);
+
+if (i_length < genLstHdr.sizeE);
+   count = i_length;
+else;
+   count = genLstHdr.sizeE;
+endif;
+
+memCpy(pDest: pSrc: count);
+
+// Increase number of entries returned
+handle.numE = handle.numE + 1;
+
+// Return return value
+o_isDone = cTrue;
+
+return o_isDone;
+
+
+end-proc;
+
+//==================================================================*
+//  *** private ***
+//  Sort User Space
+//==================================================================*
+dcl-proc f_mblSort;
+  dcl-pi *n ind;
+    i_pUsrSpc pointer value;
+    i_orderBy char(10) value;
+    o_msg     likeds(msg_t);
+  end-pi;
+
+//  Return value
+  dcl-s o_isDone ind inz(cFalse);
+
+//  Helper fields
+  dcl-s pCompFunc pointer(*proc) inz;
+
+//  Generic List Header for List APIs
+  dcl-ds genLstHdr likeds(genLstHdr_t) based(i_pUsrSpc);
+//-------------------------------------------------------------------
+
+// Get address of sort procedure ...
+select;
+
+   // ... do not sort
+when (i_orderBy = '*NONE');
+   pCompFunc = *NULL;
+   o_isDone = cTrue;
+   o_msg    = f_newMsg(cMSG_ID_OK);
+
+   // ... sortieren nach Name
+when (i_orderBy = '*NAME');
+   pCompFunc = %paddr('F_MBLSORTBYNAME');
+   o_isDone = cTrue;
+   o_msg    = f_newMsg(cMSG_ID_OK);
+
+   // ... sortieren nach Erstellungsdatum
+when (i_orderBy = '*CRTDATE');
+   pCompFunc = %paddr('F_MBLSORTBYCRTDATE');
+   o_isDone = cTrue;
+   o_msg    = f_newMsg(cMSG_ID_OK);
+
+   // ... unsupported sort value
+other;
+   pCompFunc = *NULL;
+   o_isDone = cFalse;
+   o_msg    = f_newMsg('CPF9898'
+                : 'Value ' + %trim(i_orderBy) +
+                   ' for parameter ''orderBy'' +
+                   not supported'
+                : cMsg_Escape
+                : 'QCPFMSG'
+                : '*LIBL');
+endsl;
+
+// Sort user space
+if (pCompFunc <> *NULL);
+   qsort(i_pUsrSpc + genLstHdr.ofsLstSct     // basing pointer
+         : genLstHdr.numE                    // number of entries
+         : genLstHdr.sizeE                   // length of entry
+         : pCompFunc);                       // compare procedure
+endif;
+
+return o_isDone;
+
+
+end-proc;
+
+//==================================================================*
+//  *** private ***
+//  Member List: Sort By Name
+//==================================================================*
+dcl-proc f_mblSortByName;
+  dcl-pi *n int(10);
+    i_pKey     pointer value;
+    i_pElement pointer value;
+  end-pi;
+
+//  Return value
+  dcl-s o_result int(10) inz;
+
+//  KEY entry
+  dcl-ds key likeds(mbrl0200_t) based(i_pKey);
+
+//  ELEMENT entry
+  dcl-ds element likeds(mbrl0200_t) based(i_pElement);
+//-------------------------------------------------------------------
+
+select;
+when (key.mbr < element.mbr);
+   o_result = -1;
+when (key.mbr > element.mbr);
+   o_result =  1;
+other;
+   o_result =  0;
+endsl;
+
+return o_result;
+
+
+end-proc;
+
+//==================================================================*
+//  *** private ***
+//  Member List: Sort By Creation Date
+//==================================================================*
+dcl-proc f_mblSortByCrtDate;
+  dcl-pi *n int(10);
+    i_pKey     pointer value;
+    i_pElement pointer value;
+  end-pi;
+
+//  Return value
+  dcl-s o_result int(10) inz;
+
+//  KEY entry
+  dcl-ds key likeds(mbrl0200_t) based(i_pKey);
+
+//  ELEMENT entry
+  dcl-ds element likeds(mbrl0200_t) based(i_pElement);
+//-------------------------------------------------------------------
+
+select;
+when (cvtApiTmstmp(key.crtDatTim) < cvtApiTmstmp(element.crtDatTim));
+   o_result = -1;
+when (cvtApiTmstmp(key.crtDatTim) > cvtApiTmstmp(element.crtDatTim));
+   o_result =  1;
+other;
+   o_result =  0;
+endsl;
+
+return o_result;
+
+
+end-proc;
+
+//==================================================================*
+//  *** private ***
+//  Converts a given API timestamp to a RPG timestamp.
+//==================================================================*
+dcl-proc cvtApiTmstmp;
+  dcl-pi *n timestamp;
+    i_apiTmstmp char(13) value;
+  end-pi;
+
+//  Return value
+  dcl-s timestamp timestamp inz;
+//-------------------------------------------------------------------
+
+timestamp = %date(%subst(i_apiTmstmp: 1: 7): *cymd0) +
+            %time(%subst(i_apiTmstmp: 8: 6): *hms0 );
+
+return timestamp;
+
+
+end-proc;
+
+]]>  </copysrc>
+</mbr>
+<qcmdexc condition="*NONE" release="*CURRENT" dltsplf="A_INSTALL"><![CDATA[
+CRTBNDCL PGM(&tolib/A_INSTALL) SRCFILE(&tolib/QRTVMBRL) SRCMBR(*PGM) DFTACTGRP(*NO) ACTGRP(*NEW) DBG
+VIEW(*LIST)
+]]>  </qcmdexc>
+<qcmdexc condition="*NONE" release="*CURRENT" dltsplf="*NONE"><![CDATA[
+CALL PGM(&tolib/A_INSTALL) PARM(('&TGTRLS') ('&SRCFILE') ('&tolib') ('&CRTTSTPGM'))
+]]>  </qcmdexc>
+<qcmdexc condition="*NONE" release="*CURRENT" dltsplf="*NONE"><![CDATA[
+DLTPGM PGM(&tolib/A_INSTALL)
+]]>  </qcmdexc>
+<sendmsg  sendmsgid="CPF9897" sendmsgtype = "*COMP     "><![CDATA[
+Application RTVMBRL successfully installed.
+]]>  </sendmsg>
+</upload>
